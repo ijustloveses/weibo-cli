@@ -55,6 +55,7 @@ cli.add_command(personal.following)
 cli.add_command(personal.followers)
 cli.add_command(personal.reposts)
 cli.add_command(personal.home)
+cli.add_command(personal.since)
 
 
 if __name__ == "__main__":

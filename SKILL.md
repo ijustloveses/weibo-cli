@@ -99,6 +99,7 @@ Non-TTY stdout defaults to YAML automatically.
 | `weibo reposts <mblogid>` | View reposts/forwards | `weibo reposts Qw06Kd98p --count 5` |
 | `weibo profile <uid>` | User profile | `weibo profile 1699432410 --json` |
 | `weibo weibos <uid>` | User's published weibos | `weibo weibos 1699432410 --count 5` |
+| `weibo since <uid>` | Incremental: weibos newer than a cursor, or from the last N days | `weibo since 1699432410 --since Qw06Kd98p --json` |
 | `weibo following <uid>` | User's following list | `weibo following 1699432410` |
 | `weibo followers <uid>` | User's follower list | `weibo followers 1699432410` |
 
@@ -136,6 +137,18 @@ weibo weibos 1699432410 --count 3 --json
 ```bash
 weibo comments Qw06Kd98p --json | jq '.data[:5] | .[].text_raw'
 ```
+
+### Track a user incrementally (poll for new posts)
+
+```bash
+# First run: grab the last day and remember the newest id as a cursor
+weibo since 1699432410 --json | jq -r '.statuses[0].mblogid'   # → save this cursor
+
+# Later runs: fetch everything newer than the saved cursor (dedup-safe)
+weibo since 1699432410 --since <saved_cursor> --json | jq '.statuses[] | {id: .mblogid, time: .created_at, text: .text_raw}'
+```
+
+`since` returns statuses newest-first with a stable `mblogid`/`mid` per item, so it is safe for dedup and incremental tracking. Without `--since` it defaults to the last 1 day (`--days N` to widen).
 
 ### Daily monitoring workflow
 

@@ -31,6 +31,7 @@ A CLI for Weibo (微博) — search, browse hot topics, read timelines, and expl
 - Reposts: view forwards/reposts of any weibo
 - User profiles: view user info, stats, and bio
 - User weibos: browse a user's published weibos
+- Incremental fetch: get a user's weibos newer than a given one, or from the last N days (`since`)
 - Following: view a user's following list
 - Followers: view a user's follower list
 - Structured output: export any data as JSON or YAML for scripting and AI agent integration
@@ -136,6 +137,12 @@ weibo weibos <uid>                     # User's weibos
 weibo weibos 1699432410 --count 5      # Limit count
 weibo following <uid>                  # User's following list
 weibo followers <uid>                  # User's follower list
+
+# ─── Incremental Fetch ──────────────────────────
+weibo since <uid> --since <mblogid>    # Weibos newer than <mblogid>
+weibo since <uid>                      # Weibos from the last day
+weibo since <uid> --days 3             # Weibos from the last 3 days
+weibo since 1699432410 --since Qw06Kd98p --json   # Structured, for tracking
 ```
 
 ### Authentication
@@ -191,7 +198,7 @@ uv run pytest tests/ -v -m smoke
 ```text
 weibo_cli/
 ├── __init__.py
-├── cli.py             # Click entry point (16 commands)
+├── cli.py             # Click entry point (17 commands)
 ├── client.py          # WeiboClient (17 API methods, rate-limit, retry)
 ├── auth.py            # QR login + browser-cookie3 + credential persistence
 ├── constants.py       # API endpoints, headers, Chrome 145 UA
@@ -200,7 +207,7 @@ weibo_cli/
     ├── _common.py     # structured_output_options, handle_command, strip_html, format_count
     ├── auth.py        # login/logout/status/me
     ├── search.py      # hot/feed/detail/comments/trending/search
-    └── personal.py    # profile/weibos/following/followers/reposts/home
+    └── personal.py    # profile/weibos/following/followers/reposts/home/since
 ```
 
 ### Use as AI Agent Skill
@@ -247,6 +254,7 @@ git clone git@github.com:jackwener/weibo-cli.git .agents/skills/weibo-cli
 - 🔁 转发：查看微博转发
 - 👤 用户资料：用户信息和统计
 - 📋 用户微博：浏览用户已发布的微博列表
+- ⏱️ 增量拉取：获取比某条更新的微博，或最近 N 天的微博（`since`）
 - 👥 关注列表：查看用户的关注列表
 - 👥 粉丝列表：查看用户的粉丝列表
 - 📊 结构化输出：支持 JSON 和 YAML，便于脚本和 AI Agent 集成
@@ -321,6 +329,11 @@ weibo profile 1699432410               # 用户资料
 weibo weibos 1699432410                # 用户微博列表
 weibo following 1699432410             # 用户关注列表
 weibo followers 1699432410             # 用户粉丝列表
+
+# 增量拉取
+weibo since 1699432410 --since Qw06Kd98p   # 比该条更新的所有微博
+weibo since 1699432410                      # 最近 1 天的微博
+weibo since 1699432410 --days 3             # 最近 3 天的微博
 ```
 
 ### 常见问题

@@ -2,11 +2,31 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import click
 from rich.panel import Panel
 
-from ._common import console, format_count, handle_command, require_auth, structured_output_options
+from ._common import console, format_count, handle_command, parse_weibo_time, require_auth, structured_output_options
 from .renderers import render_repost_list, render_user_table, render_weibo_list
+
+# Stop paging once we're this many pages deep, as a safety net against
+# runaway pagination on prolific accounts.
+_MAX_SINCE_PAGES = 20
+
+
+def _weibo_id(status: dict) -> str:
+    """Stable unique id for a status (mblogid preferred, mid as fallback)."""
+    return str(status.get("mblogid") or status.get("bid") or status.get("mid") or status.get("id") or "")
+
+
+def _extract_statuses(data) -> list[dict]:
+    """Pull the status list out of a get_user_weibos response."""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return data.get("list", data.get("statuses", []))
+    return []
 
 
 @click.command()
@@ -147,5 +167,65 @@ def home(count, as_json, as_yaml):
 
     def _action(client):
         return client.get_friends_timeline(count=min(count, 50))
+
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+
+
+@click.command()
+@click.argument("uid")
+@click.option("--since", "since_id", default=None, help="游标 mblogid：只返回比它更新的微博")
+@click.option("--days", default=1, help="未给 --since 时，返回最近 N 天的微博 (默认 1)")
+@click.option("--max-pages", default=_MAX_SINCE_PAGES, help=f"最多翻页数 (默认 {_MAX_SINCE_PAGES})")
+@structured_output_options
+def since(uid, since_id, days, max_pages, as_json, as_yaml):
+    """增量拉取：某用户比 <mblogid> 更新的微博，或最近 N 天的微博
+
+    \b
+    weibo since <uid> --since <mblogid>   # 比该条更新的所有微博
+    weibo since <uid>                     # 最近 1 天的微博
+    weibo since <uid> --days 3            # 最近 3 天的微博
+    """
+    cred = require_auth()
+
+    cutoff = None
+    if not since_id:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    def _action(client):
+        collected: list[dict] = []
+        for page in range(1, max_pages + 1):
+            data = client.get_user_weibos(uid, page=page, count=20)
+            statuses = _extract_statuses(data)
+            if not statuses:
+                break
+
+            reached_end = False
+            for s in statuses:
+                # Cursor mode: stop as soon as we hit the cursor weibo itself.
+                if since_id and _weibo_id(s) == str(since_id):
+                    reached_end = True
+                    break
+                # Time mode: statuses are newest-first, so once one is older
+                # than the cutoff, everything after it is older too.
+                if cutoff is not None:
+                    ts = parse_weibo_time(s.get("created_at", ""))
+                    if ts is not None and ts < cutoff:
+                        reached_end = True
+                        break
+                collected.append(s)
+
+            if reached_end or len(statuses) < 20:
+                break
+
+        return {"uid": str(uid), "count": len(collected), "statuses": collected}
+
+    def _render(data):
+        statuses = data.get("statuses", [])
+        if since_id:
+            header = f"[dim]@{uid} 比 {since_id} 更新的微博：{len(statuses)} 条[/dim]"
+        else:
+            header = f"[dim]@{uid} 最近 {days} 天的微博：{len(statuses)} 条[/dim]"
+        console.print(header)
+        render_weibo_list(statuses, count=len(statuses), show_user=False, empty_msg="[yellow]没有更新的微博[/yellow]")
 
     handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)

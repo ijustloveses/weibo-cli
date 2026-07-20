@@ -34,7 +34,7 @@ def test_version():
 EXPECTED_COMMANDS = [
     "login", "logout", "status", "me",
     "hot", "feed", "detail", "comments", "trending", "search",
-    "profile", "weibos", "following", "followers", "reposts", "home",
+    "profile", "weibos", "following", "followers", "reposts", "home", "since",
 ]
 
 
@@ -104,6 +104,7 @@ def test_all_error_codes():
     ("followers", "粉丝列表"),
     ("reposts", "转发"),
     ("home", "关注者"),
+    ("since", "增量"),
 ])
 def test_command_help_text(cmd, expected_text):
     """Each command has appropriate help description."""
@@ -112,7 +113,7 @@ def test_command_help_text(cmd, expected_text):
     assert expected_text in result.output
 
 
-@pytest.mark.parametrize("cmd", ["hot", "feed", "detail", "comments", "trending", "search", "profile", "weibos", "following", "followers", "reposts", "home"])
+@pytest.mark.parametrize("cmd", ["hot", "feed", "detail", "comments", "trending", "search", "profile", "weibos", "following", "followers", "reposts", "home", "since"])
 def test_json_option_available(cmd):
     """All data commands support --json flag."""
     runner = CliRunner()

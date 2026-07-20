@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 import sys
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import click
@@ -23,6 +25,26 @@ console = Console()
 def strip_html(text: str) -> str:
     """Remove HTML tags from text."""
     return re.sub(r"<[^>]+>", "", text or "")
+
+
+def parse_weibo_time(created_at: str) -> datetime | None:
+    """Parse Weibo's `created_at` string into a timezone-aware datetime.
+
+    Weibo uses the Twitter-style format: "Sat Mar 14 07:20:55 +0800 2026".
+    Returns None if the value is missing or unparseable.
+    """
+    if not created_at:
+        return None
+    try:
+        dt = parsedate_to_datetime(created_at)
+    except (TypeError, ValueError):
+        return None
+    if dt is None:
+        return None
+    # Normalize naive datetimes to UTC so comparisons never raise.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def format_count(n: int | str) -> str:

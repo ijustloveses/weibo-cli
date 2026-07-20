@@ -230,9 +230,9 @@ class WeiboClient:
         return self._get(PROFILE_INFO_URL, params={"uid": uid}, action="用户资料")
 
     def get_user_weibos(self, uid: str, page: int = 1, count: int = 20, feature: int = 0) -> dict[str, Any]:
-        """Get user's weibo list."""
+        """Get user's weibo list (newest first)."""
         return self._get(MY_MBLOG_URL, params={
-            "uid": uid, "page": str(page), "feature": str(feature),
+            "uid": uid, "page": str(page), "count": str(count), "feature": str(feature),
         }, action="用户微博")
 
     # ── Weibo Detail ────────────────────────────────────────────────
