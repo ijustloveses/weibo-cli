@@ -99,7 +99,7 @@ Non-TTY stdout defaults to YAML automatically.
 | `weibo reposts <mblogid>` | View reposts/forwards | `weibo reposts Qw06Kd98p --count 5` |
 | `weibo profile <uid>` | User profile | `weibo profile 1699432410 --json` |
 | `weibo weibos <uid>` | User's published weibos | `weibo weibos 1699432410 --count 5` |
-| `weibo since <uid>` | Incremental: weibos newer than a cursor, or from the last N days | `weibo since 1699432410 --since Qw06Kd98p --json` |
+| `weibo since <uid>` | Incremental: weibos newer than a cursor, or from the last N days. Add `--full` to auto-fetch full body for long weibos | `weibo since 1699432410 --since Qw06Kd98p --full --json` |
 | `weibo following <uid>` | User's following list | `weibo following 1699432410` |
 | `weibo followers <uid>` | User's follower list | `weibo followers 1699432410` |
 

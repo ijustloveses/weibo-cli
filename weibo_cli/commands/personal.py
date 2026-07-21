@@ -8,6 +8,7 @@ import click
 from rich.panel import Panel
 
 from ._common import console, format_count, handle_command, parse_weibo_time, require_auth, structured_output_options
+from ..exceptions import WeiboApiError
 from .renderers import render_repost_list, render_user_table, render_weibo_list
 
 # Stop paging once we're this many pages deep, as a safety net against
@@ -176,14 +177,19 @@ def home(count, as_json, as_yaml):
 @click.option("--since", "since_id", default=None, help="游标 mblogid：只返回比它更新的微博")
 @click.option("--days", default=1, help="未给 --since 时，返回最近 N 天的微博 (默认 1)")
 @click.option("--max-pages", default=_MAX_SINCE_PAGES, help=f"最多翻页数 (默认 {_MAX_SINCE_PAGES})")
+@click.option("--full", "fetch_full", is_flag=True, help="对长微博自动补拉全文（每条长微博多一次请求，较慢）")
 @structured_output_options
-def since(uid, since_id, days, max_pages, as_json, as_yaml):
+def since(uid, since_id, days, max_pages, fetch_full, as_json, as_yaml):
     """增量拉取：某用户比 <mblogid> 更新的微博，或最近 N 天的微博
 
     \b
     weibo since <uid> --since <mblogid>   # 比该条更新的所有微博
     weibo since <uid>                     # 最近 1 天的微博
     weibo since <uid> --days 3            # 最近 3 天的微博
+    weibo since <uid> --full              # 长微博自动补拉全文
+
+    列表接口对长微博只返回摘要（约前 180 字）。加 --full 后，会对
+    标记为长微博的条目逐条调用 detail 补全 longText 全文。
     """
     cred = require_auth()
 
@@ -216,6 +222,22 @@ def since(uid, since_id, days, max_pages, as_json, as_yaml):
 
             if reached_end or len(statuses) < 20:
                 break
+
+        # Optionally enrich long weibos with their full body via the detail API.
+        if fetch_full:
+            for s in collected:
+                if not s.get("isLongText"):
+                    continue
+                mblogid = _weibo_id(s)
+                if not mblogid:
+                    continue
+                try:
+                    detail = client.get_weibo_detail(mblogid)
+                except WeiboApiError:
+                    continue  # keep the summary if a single detail fails
+                long_text = detail.get("longText")
+                if isinstance(long_text, dict):
+                    s["longText"] = long_text
 
         return {"uid": str(uid), "count": len(collected), "statuses": collected}
 

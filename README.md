@@ -142,8 +142,11 @@ weibo followers <uid>                  # User's follower list
 weibo since <uid> --since <mblogid>    # Weibos newer than <mblogid>
 weibo since <uid>                      # Weibos from the last day
 weibo since <uid> --days 3             # Weibos from the last 3 days
+weibo since <uid> --full               # Auto-fetch full body for long weibos
 weibo since 1699432410 --since Qw06Kd98p --json   # Structured, for tracking
 ```
+
+> The list API returns only a ~180-char preview for long weibos. Use `--full` to auto-fetch each long weibo's complete body via the detail API (one extra request per long weibo). Weibo `#topic#` tags are stripped from the returned text by default (Markdown and code spans are preserved).
 
 ### Authentication
 
@@ -334,7 +337,10 @@ weibo followers 1699432410             # 用户粉丝列表
 weibo since 1699432410 --since Qw06Kd98p   # 比该条更新的所有微博
 weibo since 1699432410                      # 最近 1 天的微博
 weibo since 1699432410 --days 3             # 最近 3 天的微博
+weibo since 1699432410 --full               # 长微博自动补拉全文
 ```
+
+> 列表接口对长微博只返回约 180 字摘要。加 `--full` 会对每条长微博通过详情接口补拉完整正文（每条长微博多一次请求）。返回文本默认已去除微博 `#话题#` 标签（保留 Markdown 与代码片段中的 `#`）。
 
 ### 常见问题
 

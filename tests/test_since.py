@@ -114,3 +114,71 @@ class TestSinceTimeWindow:
         assert result.exit_code == 0
         assert '"count": 0' in result.output
         assert calls["n"] == 1  # never paged to page 2
+
+
+# ── since --full: long-text enrichment ───────────────────────────────
+
+
+class TestSinceFull:
+    def test_full_enriches_long_weibos_only(self, monkeypatch, patched_auth):
+        # Two statuses: one long, one short.
+        long_s = _status("longone", hours_ago=1)
+        long_s["isLongText"] = True
+        long_s["text_raw"] = "short preview"
+        short_s = _status("shortone", hours_ago=2)  # no isLongText
+
+        def fake_weibos(self, uid, page=1, count=20, feature=0):
+            return {"list": [long_s, short_s] if page == 1 else []}
+
+        detail_calls = []
+
+        def fake_detail(self, mblogid):
+            detail_calls.append(mblogid)
+            return {"longText": {"longTextContent": f"FULL BODY of {mblogid}"}}
+
+        monkeypatch.setattr("weibo_cli.client.WeiboClient.get_user_weibos", fake_weibos)
+        monkeypatch.setattr("weibo_cli.client.WeiboClient.get_weibo_detail", fake_detail)
+
+        result = CliRunner().invoke(cli, ["since", "12345", "--json", "--full"])
+        assert result.exit_code == 0
+        # detail called only for the long weibo, never the short one.
+        assert detail_calls == ["longone"]
+        assert "FULL BODY of longone" in result.output
+
+    def test_no_full_flag_skips_detail(self, monkeypatch, patched_auth):
+        long_s = _status("longone", hours_ago=1)
+        long_s["isLongText"] = True
+
+        monkeypatch.setattr("weibo_cli.client.WeiboClient.get_user_weibos",
+                            lambda self, uid, page=1, count=20, feature=0: {"list": [long_s] if page == 1 else []})
+
+        called = {"detail": False}
+
+        def fake_detail(self, mblogid):
+            called["detail"] = True
+            return {}
+
+        monkeypatch.setattr("weibo_cli.client.WeiboClient.get_weibo_detail", fake_detail)
+
+        result = CliRunner().invoke(cli, ["since", "12345", "--json"])
+        assert result.exit_code == 0
+        assert called["detail"] is False  # no --full → no detail calls
+
+    def test_full_survives_detail_failure(self, monkeypatch, patched_auth):
+        from weibo_cli.exceptions import WeiboApiError
+        long_s = _status("longone", hours_ago=1)
+        long_s["isLongText"] = True
+        long_s["text_raw"] = "keep this preview"
+
+        monkeypatch.setattr("weibo_cli.client.WeiboClient.get_user_weibos",
+                            lambda self, uid, page=1, count=20, feature=0: {"list": [long_s] if page == 1 else []})
+
+        def boom(self, mblogid):
+            raise WeiboApiError("detail failed")
+
+        monkeypatch.setattr("weibo_cli.client.WeiboClient.get_weibo_detail", boom)
+
+        result = CliRunner().invoke(cli, ["since", "12345", "--json", "--full"])
+        assert result.exit_code == 0  # does not crash
+        assert '"count": 1' in result.output
+        assert "keep this preview" in result.output
