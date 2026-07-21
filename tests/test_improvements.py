@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from weibo_cli.commands._common import format_count, strip_html
+from weibo_cli.commands._common import format_count, full_text, strip_html, strip_topic_tags
 from weibo_cli.exceptions import SessionExpiredError, WeiboApiError
 
 
@@ -65,6 +65,110 @@ class TestFormatCount:
 
     def test_zero(self):
         assert format_count(0) == "0"
+
+
+# ── strip_topic_tags tests ───────────────────────────────────────────
+
+
+class TestStripTopicTags:
+    def test_removes_trailing_tags(self):
+        text = "GitHub: github.com/x/y\n\n#HOW I AI#  #程序员#"
+        assert strip_topic_tags(text) == "GitHub: github.com/x/y"
+
+    def test_removes_leading_tag(self):
+        assert strip_topic_tags("#热点# 今天天气不错") == "今天天气不错"
+
+    def test_removes_mid_text_tag(self):
+        assert strip_topic_tags("看看 #科技# 相关的内容") == "看看 相关的内容"
+
+    def test_removes_multiple_tags(self):
+        assert strip_topic_tags("#a# 正文 #b# 更多 #c#") == "正文 更多"
+
+    # ── Markdown safety ──
+
+    def test_keeps_markdown_h1(self):
+        assert strip_topic_tags("# 标题\n正文") == "# 标题\n正文"
+
+    def test_keeps_markdown_h2(self):
+        assert strip_topic_tags("## 二级标题") == "## 二级标题"
+
+    def test_keeps_hash_in_inline_code(self):
+        # #include is paired-ish only if wrapped; here protect inline code entirely.
+        assert strip_topic_tags("用 `#include <stdio.h>` 引入") == "用 `#include <stdio.h>` 引入"
+
+    def test_keeps_color_hex_in_inline_code(self):
+        assert strip_topic_tags("设 `color: #fff` 即可") == "设 `color: #fff` 即可"
+
+    def test_keeps_paired_hash_inside_code(self):
+        # A paired #x# inside inline code must NOT be stripped.
+        assert strip_topic_tags("代码 `a #x# b` 结束") == "代码 `a #x# b` 结束"
+
+    def test_keeps_fenced_code_block(self):
+        text = "说明\n```\n# comment\nx = '#not a tag#'\n```\n#真话题#"
+        result = strip_topic_tags(text)
+        assert "# comment" in result
+        assert "'#not a tag#'" in result
+        assert "#真话题#" not in result
+
+    def test_markdown_heading_after_tag_removed(self):
+        text = "#话题#\n# 真Markdown标题\n正文"
+        result = strip_topic_tags(text)
+        assert "#话题#" not in result
+        assert "# 真Markdown标题" in result
+
+    # ── edge cases ──
+
+    def test_empty(self):
+        assert strip_topic_tags("") == ""
+
+    def test_no_tags(self):
+        assert strip_topic_tags("普通文本没有标签") == "普通文本没有标签"
+
+    def test_single_hash_not_removed(self):
+        # A lone hash (no closing pair) is not a topic tag.
+        assert strip_topic_tags("价格是 100# 一件") == "价格是 100# 一件"
+
+    def test_collapses_double_space_from_removed_tags(self):
+        # "#a#  #b#" between words shouldn't leave a big gap.
+        assert strip_topic_tags("start #a#  #b# end") == "start end"
+
+
+# ── full_text tests ──────────────────────────────────────────────────
+
+
+class TestFullText:
+    def test_prefers_long_text_content(self):
+        s = {"text_raw": "short preview", "longText": {"longTextContent": "the full long body here"}}
+        assert full_text(s) == "the full long body here"
+
+    def test_falls_back_to_text_raw(self):
+        s = {"text_raw": "just a normal weibo"}
+        assert full_text(s) == "just a normal weibo"
+
+    def test_falls_back_to_text(self):
+        s = {"text": "<a>hello</a> world"}
+        assert full_text(s) == "hello world"
+
+    def test_strips_html_from_long_content(self):
+        s = {"text_raw": "x", "longText": {"longTextContent": "<b>bold</b> and <i>italic</i>"}}
+        assert full_text(s) == "bold and italic"
+
+    def test_uses_content_key_when_longtextcontent_absent(self):
+        s = {"text_raw": "x", "longText": {"content": "alternate long field that is clearly longer"}}
+        assert full_text(s) == "alternate long field that is clearly longer"
+
+    def test_shorter_long_text_ignored(self):
+        # If longTextContent is somehow shorter, keep the longer text_raw.
+        s = {"text_raw": "a much longer preview than the long field", "longText": {"longTextContent": "tiny"}}
+        assert full_text(s) == "a much longer preview than the long field"
+
+    def test_empty_status(self):
+        assert full_text({}) == ""
+
+    def test_longtext_not_dict(self):
+        # Some list responses have longText as a bool/None — must not crash.
+        s = {"text_raw": "fine", "longText": True}
+        assert full_text(s) == "fine"
 
 
 # ── _handle_response unwrap tests ────────────────────────────────────

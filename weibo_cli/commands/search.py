@@ -6,7 +6,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
-from ._common import console, format_count, handle_command, require_auth, strip_html, structured_output_options
+from ._common import console, format_count, full_text, handle_command, require_auth, structured_output_options
 from .renderers import render_comment_list, render_weibo_list
 
 
@@ -76,7 +76,7 @@ def detail(mblogid, as_json, as_yaml):
         user = data.get("user", {})
         name = user.get("screen_name", "未知")
         verified = " ✓" if user.get("verified") else ""
-        text = strip_html(data.get("text_raw", data.get("text", "")))
+        text = full_text(data)
         source = data.get("source", "")
         created = data.get("created_at", "")
         reposts = data.get("reposts_count", 0)

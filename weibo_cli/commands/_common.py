@@ -27,6 +27,69 @@ def strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text or "")
 
 
+# Weibo topic tags look like #话题#: a pair of hashes wrapping a run of text
+# that contains no '#' and no newline. Markdown headings (`# foo`) use a single
+# leading hash with no closing hash, so they never match this pattern.
+_TOPIC_TAG_RE = re.compile(r"#[^#\n]+#")
+
+# Fenced code blocks (```...```) and inline code (`...`). Matched together so a
+# stray backtick inside a fenced block can't desync the inline pass.
+_CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
+
+
+def strip_topic_tags(text: str) -> str:
+    """Remove Weibo #topic# tags from *text* while preserving Markdown.
+
+    Weibo topics are paired-hash spans (``#话题#``). We delete those, but never
+    touch text inside fenced code blocks (```` ``` ````) or inline code
+    (`` ` ``), so `#include`, `# comment`, `color: #fff` etc. survive. Markdown
+    headings are safe regardless, since a leading `# ` has no closing hash.
+    """
+    if not text:
+        return text
+
+    # Protect code spans by swapping them for placeholders that contain no '#'.
+    placeholders: list[str] = []
+
+    def _stash(match: re.Match) -> str:
+        placeholders.append(match.group(0))
+        return f"\x00CODE{len(placeholders) - 1}\x00"
+
+    protected = _CODE_SPAN_RE.sub(_stash, text)
+
+    # Drop topic tags from the non-code text.
+    protected = _TOPIC_TAG_RE.sub("", protected)
+
+    # Restore code spans.
+    def _restore(match: re.Match) -> str:
+        return placeholders[int(match.group(1))]
+
+    protected = re.sub(r"\x00CODE(\d+)\x00", _restore, protected)
+
+    # Collapse whitespace runs left behind by removed tags, but keep newlines.
+    protected = re.sub(r"[^\S\n]{2,}", " ", protected)
+    # Trim trailing spaces on each line and leading/trailing blank space.
+    protected = "\n".join(line.rstrip() for line in protected.split("\n"))
+    return protected.strip()
+
+
+def full_text(status: dict) -> str:
+    """Return a weibo's full body, preferring long-text content over the
+    truncated text_raw/text.
+
+    Long weibos (isLongText) carry the complete body in
+    longText.longTextContent when fetched with isGetLongText=1; the top-level
+    text_raw is only a ~180-char preview.
+    """
+    long_text = status.get("longText")
+    long_content = ""
+    if isinstance(long_text, dict):
+        long_content = long_text.get("longTextContent") or long_text.get("content") or ""
+    short = status.get("text_raw") or status.get("text") or ""
+    body = strip_html(long_content if len(long_content) > len(short) else short)
+    return strip_topic_tags(body)
+
+
 def parse_weibo_time(created_at: str) -> datetime | None:
     """Parse Weibo's `created_at` string into a timezone-aware datetime.
 

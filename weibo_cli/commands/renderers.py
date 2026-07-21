@@ -9,7 +9,7 @@ from __future__ import annotations
 from rich.panel import Panel
 from rich.table import Table
 
-from ._common import console, format_count, strip_html
+from ._common import console, format_count, full_text, strip_html
 
 
 # ── Weibo card ──────────────────────────────────────────────────────
@@ -27,7 +27,7 @@ def render_weibo_card(
 
     Used by: feed, home, search, weibos.
     """
-    text = strip_html(s.get("text_raw", s.get("text", "")))
+    text = full_text(s)
     created = s.get("created_at", "")
     reposts = s.get("reposts_count", 0)
     comments_count = s.get("comments_count", 0)

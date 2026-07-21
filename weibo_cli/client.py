@@ -238,8 +238,12 @@ class WeiboClient:
     # ── Weibo Detail ────────────────────────────────────────────────
 
     def get_weibo_detail(self, mblogid: str) -> dict[str, Any]:
-        """Get single weibo detail by mblogid (e.g. 'Qw06Kd98p')."""
-        return self._get(STATUSES_SHOW_URL, params={"id": mblogid}, action="微博详情", unwrap=False)
+        """Get single weibo detail by mblogid (e.g. 'Qw06Kd98p').
+
+        Passes isGetLongText=1 so long weibos return full body in
+        longText.longTextContent instead of a truncated text_raw.
+        """
+        return self._get(STATUSES_SHOW_URL, params={"id": mblogid, "isGetLongText": "1"}, action="微博详情", unwrap=False)
 
     # ── Comments / Reposts ──────────────────────────────────────────
 
