@@ -167,7 +167,7 @@ Cookie TTL is **7 days** by default. After expiry, the client automatically atte
 - `Unable to get key for cookie decryption` (macOS Keychain):
   - **SSH sessions**: `security unlock-keychain ~/Library/Keychains/login.keychain-db`
   - **Local terminal**: Open **Keychain Access** → search **"Chrome Safe Storage"** → **Access Control** → add Terminal → **Save**
-- Requests are slow — intentional Gaussian jitter delay (~1s) to avoid triggering Weibo's risk control
+- Requests are slow — intentional ~2.5s spacing plus Gaussian jitter to avoid triggering Weibo's risk control (`weibo archive` accepts `--delay` to go slower)
 
 ### Best Practices (Avoiding Bans)
 
@@ -346,7 +346,7 @@ weibo since 1699432410 --full               # 长微博自动补拉全文
 
 - `⚠️ 未登录` — 执行 `weibo login` 认证
 - `会话已过期` — Cookie 过期，执行 `weibo logout && weibo login`
-- 请求较慢是正常的 — 内置高斯随机延迟（~1s）是为了模拟人类浏览行为，避免触发风控
+- 请求较慢是正常的 — 内置约 2.5 秒最小间隔 + 高斯随机抖动，模拟人类浏览行为、避免触发风控（`weibo archive` 可用 `--delay` 调得更慢）
 
 ### 作为 AI Agent Skill 使用
 

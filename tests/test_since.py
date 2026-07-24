@@ -8,7 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from weibo_cli.cli import cli
-from weibo_cli.commands._common import parse_weibo_time
+from weibo_cli.commands._common import format_weibo_time, parse_weibo_time
 
 
 # ── parse_weibo_time ─────────────────────────────────────────────────
@@ -32,6 +32,21 @@ class TestParseWeiboTime:
         earlier = parse_weibo_time("Sat Mar 14 07:00:00 +0800 2026")
         later = parse_weibo_time("Sat Mar 14 09:00:00 +0800 2026")
         assert earlier < later
+
+
+class TestFormatWeiboTime:
+    def test_standard_format(self):
+        assert format_weibo_time("Fri Jul 24 14:25:00 +0800 2026") == "2026-07-24 14:25:00"
+
+    def test_keeps_original_timezone(self):
+        # +0800 kept as-is, not shifted to UTC.
+        assert format_weibo_time("Tue Jul 21 07:20:00 +0800 2026") == "2026-07-21 07:20:00"
+
+    def test_empty_returns_empty(self):
+        assert format_weibo_time("") == ""
+
+    def test_garbage_passthrough(self):
+        assert format_weibo_time("not a date") == "not a date"
 
 
 # ── since command: pagination + filtering ────────────────────────────

@@ -36,17 +36,29 @@ _TOPIC_TAG_RE = re.compile(r"#[^#\n]+#")
 # stray backtick inside a fenced block can't desync the inline pass.
 _CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
 
+# Zero-width / BOM characters Weibo sprinkles at the end of posts.
+_ZERO_WIDTH_RE = re.compile(r"[​‌‍⁠﻿]")
+
+# Weibo's t.cn short links. Media/links are surfaced separately, so these are
+# redundant noise in the body text.
+_TCN_RE = re.compile(r"https?://t\.cn/[A-Za-z0-9]+")
+
 
 def strip_topic_tags(text: str) -> str:
-    """Remove Weibo #topic# tags from *text* while preserving Markdown.
+    """Remove Weibo #topic# tags, t.cn short links, and zero-width chars from
+    *text* while preserving Markdown.
 
-    Weibo topics are paired-hash spans (``#话题#``). We delete those, but never
-    touch text inside fenced code blocks (```` ``` ````) or inline code
-    (`` ` ``), so `#include`, `# comment`, `color: #fff` etc. survive. Markdown
-    headings are safe regardless, since a leading `# ` has no closing hash.
+    Weibo topics are paired-hash spans (``#话题#``). We delete those and t.cn
+    links, but never touch text inside fenced code blocks (```` ``` ````) or
+    inline code (`` ` ``), so `#include`, `# comment`, `color: #fff` etc.
+    survive. Markdown headings are safe regardless, since a leading `# ` has no
+    closing hash.
     """
     if not text:
         return text
+
+    # Zero-width chars are always noise; strip them everywhere first.
+    text = _ZERO_WIDTH_RE.sub("", text)
 
     # Protect code spans by swapping them for placeholders that contain no '#'.
     placeholders: list[str] = []
@@ -57,8 +69,9 @@ def strip_topic_tags(text: str) -> str:
 
     protected = _CODE_SPAN_RE.sub(_stash, text)
 
-    # Drop topic tags from the non-code text.
+    # Drop topic tags and t.cn short links from the non-code text.
     protected = _TOPIC_TAG_RE.sub("", protected)
+    protected = _TCN_RE.sub("", protected)
 
     # Restore code spans.
     def _restore(match: re.Match) -> str:
@@ -90,6 +103,181 @@ def full_text(status: dict) -> str:
     return strip_topic_tags(body)
 
 
+# ── Rich media / repost extraction ──────────────────────────────────
+
+
+def _pic_urls(status: dict) -> list[str]:
+    """Highest-quality URL for each attached image, in order."""
+    infos = status.get("pic_infos")
+    urls: list[str] = []
+    if isinstance(infos, dict):
+        # pic_ids preserves order; pic_infos is keyed by id.
+        ids = status.get("pic_ids") or list(infos.keys())
+        for pid in ids:
+            info = infos.get(pid)
+            if not isinstance(info, dict):
+                continue
+            for quality in ("largest", "original", "large", "bmiddle"):
+                node = info.get(quality)
+                if isinstance(node, dict) and node.get("url"):
+                    urls.append(node["url"])
+                    break
+    return urls
+
+
+def _video_url(status: dict) -> str | None:
+    """The video's web page URL (https://video.weibo.com/show?fid=...).
+
+    We deliberately do NOT return the raw mp4 stream: those URLs are
+    signed + time-limited (Expires/ssig) and stop working after a while.
+    The video page is stable and shareable.
+    """
+    page = status.get("page_info")
+    if not isinstance(page, dict):
+        return None
+    if page.get("object_type") != "video" and page.get("type") not in ("video", "11"):
+        return None
+
+    # object_id is the fid used by the video page, e.g. "1034:5324190534795325".
+    fid = page.get("object_id") or page.get("oid")
+    if fid and ":" in str(fid):
+        return f"https://video.weibo.com/show?fid={fid}"
+
+    # Fallback: a video.weibo.com link already present in url_struct.
+    for u in status.get("url_struct") or []:
+        long_url = (u or {}).get("long_url") or ""
+        if "video.weibo.com" in long_url:
+            return long_url
+    return None
+
+
+def _expanded_links(status: dict) -> list[str]:
+    """Resolve t.cn short links to their long URLs.
+
+    Skips video.weibo.com links, since those are already surfaced as the
+    weibo's video URL and would otherwise be listed twice.
+    """
+    out: list[str] = []
+    for u in status.get("url_struct") or []:
+        if isinstance(u, dict) and u.get("long_url"):
+            long_url = u["long_url"]
+            if "video.weibo.com" in long_url:
+                continue
+            title = u.get("url_title") or ""
+            out.append(f"{long_url}" + (f" ({title})" if title else ""))
+    return out
+
+
+def extract_media(status: dict, *, _depth: int = 0) -> dict:
+    """Structured media + repost context for a weibo.
+
+    Returns a dict with keys: images (list[str]), video (str|None),
+    links (list[str]), retweet (dict|None). The retweet, when present, carries
+    the original author, its body text, and its own media (one level deep).
+
+    For reposts, Weibo copies the original weibo's page_info/pics onto the outer
+    status too. Those media belong to the *original*, not the reposter, so we
+    subtract the original's media from the outer layer to avoid mis-attributing
+    (and duplicating) them.
+    """
+    media: dict = {
+        "images": _pic_urls(status),
+        "video": _video_url(status),
+        "links": _expanded_links(status),
+        "retweet": None,
+    }
+    rt = status.get("retweeted_status")
+    if isinstance(rt, dict) and _depth == 0:
+        user = rt.get("user") or {}
+        rt_media = extract_media(rt, _depth=1)
+        media["retweet"] = {
+            "author": user.get("screen_name"),
+            "mblogid": rt.get("mblogid"),
+            "text": full_text(rt),
+            "media": rt_media,
+        }
+        # Media inherited from the original must not appear on the outer layer.
+        if media["video"] and media["video"] == rt_media.get("video"):
+            media["video"] = None
+        rt_images = set(rt_media.get("images") or [])
+        media["images"] = [u for u in media["images"] if u not in rt_images]
+        rt_links = set(rt_media.get("links") or [])
+        media["links"] = [link for link in media["links"] if link not in rt_links]
+    return media
+
+
+def all_image_urls(status: dict) -> list[str]:
+    """Every image URL in a weibo, including images in the reposted original."""
+    media = extract_media(status)
+    urls = list(media.get("images") or [])
+    rt = media.get("retweet")
+    if rt:
+        urls.extend((rt.get("media") or {}).get("images") or [])
+    return urls
+
+
+def _media_lines(media: dict, *, indent: str = "") -> list[str]:
+    """Human-readable annotation lines for an extract_media() result."""
+    lines: list[str] = []
+    for img in media.get("images") or []:
+        lines.append(f"{indent}📷 {img}")
+    if media.get("video"):
+        lines.append(f"{indent}🎬 {media['video']}")
+    for link in media.get("links") or []:
+        lines.append(f"{indent}🔗 {link}")
+    return lines
+
+
+def full_text_rich(status: dict) -> str:
+    """full_text() plus appended annotation lines for images, video, links,
+    and quoted/reposted content — so media-only or repost weibos are legible.
+    """
+    parts = [full_text(status)]
+    media = extract_media(status)
+
+    ann = _media_lines(media)
+    if ann:
+        parts.append("\n".join(ann))
+
+    rt = media.get("retweet")
+    if rt:
+        # Render the quoted weibo as a Markdown blockquote (every line "> ").
+        block = [f"↩️ 转发自 @{rt.get('author') or '未知'}:"]
+        if rt.get("text"):
+            block.append(rt["text"])
+        block.extend(_media_lines(rt.get("media") or {}))
+        quoted = "\n".join(block)
+        parts.append("\n".join(f"> {line}" if line else ">" for line in quoted.split("\n")))
+
+    return "\n\n".join(p for p in parts if p.strip())
+
+
+def to_markdown(status: dict) -> str:
+    """Render a weibo as Markdown with a YAML frontmatter header.
+
+    The header carries the metadata (id, url, timestamps, counts); the body is
+    the full text plus media/repost annotations.
+    """
+    user = status.get("user") or {}
+    uid = user.get("idstr") or user.get("id") or ""
+    mblogid = status.get("mblogid") or status.get("bid") or ""
+    url = f"https://weibo.com/{uid}/{mblogid}" if uid and mblogid else ""
+
+    header = [
+        "---",
+        f"mblogid: {mblogid}",
+        f"url: {url}",
+        f"created_at: {format_weibo_time(status.get('created_at', ''))}",
+        f"is_long_text: {str(bool(status.get('isLongText'))).lower()}",
+        f"comments_count: {status.get('comments_count', 0)}",
+        f"reposts_count: {status.get('reposts_count', 0)}",
+        f"attitudes_count: {status.get('attitudes_count', 0)}",
+        "---",
+    ]
+    body = full_text_rich(status)
+    return "\n".join(header) + "\n\n" + body
+
+
 def parse_weibo_time(created_at: str) -> datetime | None:
     """Parse Weibo's `created_at` string into a timezone-aware datetime.
 
@@ -108,6 +296,18 @@ def parse_weibo_time(created_at: str) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def format_weibo_time(created_at: str) -> str:
+    """Format Weibo's `created_at` as 'YYYY-mm-dd HH:MM:SS' in its own timezone.
+
+    Keeps the original offset (Beijing +0800) rather than converting to UTC,
+    matching what weibo.com shows. Falls back to the raw string if unparseable.
+    """
+    dt = parse_weibo_time(created_at)
+    if dt is None:
+        return created_at or ""
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def format_count(n: int | str) -> str:
@@ -131,14 +331,27 @@ def require_auth() -> Credential:
 
 
 def structured_output_options(command):
-    """Decorator: add --json/--yaml options to a Click command."""
+    """Decorator: add --json/--yaml/--md options to a Click command."""
+    command = click.option("--md", "as_md", is_flag=True, help="以 Markdown (YAML frontmatter) 格式输出")(command)
     command = click.option("--yaml", "as_yaml", is_flag=True, help="以 YAML 格式输出")(command)
     command = click.option("--json", "as_json", is_flag=True, help="以 JSON 格式输出")(command)
     return command
 
 
-def handle_command(credential, *, action, render=None, as_json=False, as_yaml=False) -> Any:
-    """Run action → route output: JSON / YAML(non-TTY) / Rich render.
+def _markdown_output(data: Any) -> str:
+    """Render command result as Markdown. Handles both a single weibo and a
+    {statuses: [...]} list payload.
+    """
+    if isinstance(data, dict) and isinstance(data.get("statuses"), list):
+        blocks = [to_markdown(s) for s in data["statuses"]]
+        return "\n\n".join(blocks)
+    if isinstance(data, dict):
+        return to_markdown(data)
+    return str(data)
+
+
+def handle_command(credential, *, action, render=None, as_json=False, as_yaml=False, as_md=False) -> Any:
+    """Run action → route output: JSON / YAML / Markdown / Rich render.
 
     Also supports SessionExpiredError auto browser refresh retry.
     """
@@ -156,8 +369,10 @@ def handle_command(credential, *, action, render=None, as_json=False, as_yaml=Fa
             else:
                 raise
 
-        # Output routing
-        if as_json:
+        # Output routing. --md takes priority and works regardless of TTY.
+        if as_md:
+            click.echo(_markdown_output(data))
+        elif as_json:
             click.echo(json.dumps(data, indent=2, ensure_ascii=False))
         elif as_yaml or not sys.stdout.isatty():
             try:

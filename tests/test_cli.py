@@ -33,8 +33,8 @@ def test_version():
 
 EXPECTED_COMMANDS = [
     "login", "logout", "status", "me",
-    "hot", "feed", "detail", "comments", "trending", "search",
-    "profile", "weibos", "following", "followers", "reposts", "home", "since",
+    "hot", "feed", "detail", "download", "comments", "trending", "search",
+    "profile", "weibos", "following", "followers", "reposts", "home", "since", "archive",
 ]
 
 
@@ -105,6 +105,8 @@ def test_all_error_codes():
     ("reposts", "转发"),
     ("home", "关注者"),
     ("since", "增量"),
+    ("download", "下载"),
+    ("archive", "归档"),
 ])
 def test_command_help_text(cmd, expected_text):
     """Each command has appropriate help description."""

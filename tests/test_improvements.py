@@ -8,7 +8,16 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from weibo_cli.commands._common import format_count, full_text, strip_html, strip_topic_tags
+from weibo_cli.commands._common import (
+    all_image_urls,
+    extract_media,
+    format_count,
+    full_text,
+    full_text_rich,
+    strip_html,
+    strip_topic_tags,
+    to_markdown,
+)
 from weibo_cli.exceptions import SessionExpiredError, WeiboApiError
 
 
@@ -131,6 +140,244 @@ class TestStripTopicTags:
     def test_collapses_double_space_from_removed_tags(self):
         # "#a#  #b#" between words shouldn't leave a big gap.
         assert strip_topic_tags("start #a#  #b# end") == "start end"
+
+    # ── zero-width + t.cn cleanup ──
+
+    def test_removes_zero_width_chars(self):
+        assert strip_topic_tags("正文​​​") == "正文"
+
+    def test_removes_zero_width_in_middle(self):
+        assert strip_topic_tags("a​b") == "ab"
+
+    def test_removes_tcn_link(self):
+        assert strip_topic_tags("看视频 http://t.cn/AX9CV0W0 结束") == "看视频 结束"
+
+    def test_removes_https_tcn_link(self):
+        assert strip_topic_tags("x https://t.cn/Abc123 y") == "x y"
+
+    def test_keeps_tcn_in_code(self):
+        assert strip_topic_tags("代码 `http://t.cn/xyz` 结束") == "代码 `http://t.cn/xyz` 结束"
+
+    def test_keeps_other_urls(self):
+        # Non-t.cn URLs must survive.
+        assert strip_topic_tags("看 https://github.com/x/y 项目") == "看 https://github.com/x/y 项目"
+
+
+# ── extract_media / full_text_rich tests ─────────────────────────────
+
+
+class TestExtractMedia:
+    def test_images_highest_quality_in_order(self):
+        s = {
+            "pic_ids": ["b", "a"],
+            "pic_infos": {
+                "a": {"largest": {"url": "A_large"}, "bmiddle": {"url": "A_mid"}},
+                "b": {"original": {"url": "B_orig"}},
+            },
+        }
+        assert extract_media(s)["images"] == ["B_orig", "A_large"]
+
+    def test_video_returns_page_url_from_object_id(self):
+        # We return the stable video page, NOT the time-limited mp4 stream.
+        s = {"page_info": {"object_type": "video", "object_id": "1034:5324190534795325",
+                           "media_info": {"stream_url": "http://v/x.mp4"}}}
+        assert extract_media(s)["video"] == "https://video.weibo.com/show?fid=1034:5324190534795325"
+
+    def test_video_falls_back_to_url_struct(self):
+        s = {"page_info": {"object_type": "video"},
+             "url_struct": [{"long_url": "https://video.weibo.com/show?fid=1034:999"}]}
+        assert extract_media(s)["video"] == "https://video.weibo.com/show?fid=1034:999"
+
+    def test_video_never_returns_mp4_stream(self):
+        s = {"page_info": {"object_type": "video", "object_id": "1034:777",
+                           "media_info": {"stream_url": "http://cdn/x.mp4?ssig=abc&Expires=123"}}}
+        assert ".mp4" not in extract_media(s)["video"]
+
+    def test_no_video_when_not_video_page(self):
+        s = {"page_info": {"object_type": "article"}}
+        assert extract_media(s)["video"] is None
+
+    def test_expands_short_links(self):
+        s = {"url_struct": [{"short_url": "http://t.cn/x", "long_url": "http://real/x", "url_title": "标题"}]}
+        assert extract_media(s)["links"] == ["http://real/x (标题)"]
+
+    def test_retweet_extracted_with_media(self):
+        s = {
+            "text_raw": "引起舒适",
+            "retweeted_status": {
+                "mblogid": "ORIG1",
+                "user": {"screen_name": "原作者"},
+                "text_raw": "原微博正文",
+                "page_info": {"object_type": "video", "object_id": "1034:555"},
+            },
+        }
+        media = extract_media(s)
+        assert media["retweet"]["author"] == "原作者"
+        assert media["retweet"]["mblogid"] == "ORIG1"
+        assert media["retweet"]["text"] == "原微博正文"
+        assert media["retweet"]["media"]["video"] == "https://video.weibo.com/show?fid=1034:555"
+
+    def test_repost_video_not_duplicated_on_outer(self):
+        # Weibo copies the original's page_info onto the outer status. The video
+        # belongs to the original only — outer must not repeat it.
+        s = {
+            "text_raw": "引起舒适",
+            "page_info": {"object_type": "video", "object_id": "1034:999"},
+            "retweeted_status": {
+                "user": {"screen_name": "原作者"}, "text_raw": "原文",
+                "page_info": {"object_type": "video", "object_id": "1034:999"},
+            },
+        }
+        media = extract_media(s)
+        assert media["video"] is None  # not on outer
+        assert media["retweet"]["media"]["video"] == "https://video.weibo.com/show?fid=1034:999"
+
+    def test_repost_outer_keeps_own_new_video(self):
+        # If the reposter adds a DIFFERENT video, keep it on the outer layer.
+        s = {
+            "text_raw": "我也发个视频",
+            "page_info": {"object_type": "video", "object_id": "1034:111"},
+            "retweeted_status": {
+                "user": {"screen_name": "原作者"}, "text_raw": "原文",
+                "page_info": {"object_type": "video", "object_id": "1034:222"},
+            },
+        }
+        media = extract_media(s)
+        assert media["video"] == "https://video.weibo.com/show?fid=1034:111"
+        assert media["retweet"]["media"]["video"] == "https://video.weibo.com/show?fid=1034:222"
+
+    def test_repost_duplicate_images_removed_from_outer(self):
+        s = {
+            "text_raw": "转",
+            "pic_ids": ["a"], "pic_infos": {"a": {"largest": {"url": "SHARED"}}},
+            "retweeted_status": {
+                "user": {"screen_name": "x"}, "text_raw": "原",
+                "pic_ids": ["a"], "pic_infos": {"a": {"largest": {"url": "SHARED"}}},
+            },
+        }
+        media = extract_media(s)
+        assert media["images"] == []  # deduped off outer
+        assert media["retweet"]["media"]["images"] == ["SHARED"]
+
+    def test_retweet_recursion_only_one_level(self):
+        # A retweet inside a retweet must not recurse infinitely.
+        s = {
+            "retweeted_status": {
+                "user": {"screen_name": "A"}, "text_raw": "x",
+                "retweeted_status": {"user": {"screen_name": "B"}, "text_raw": "y"},
+            }
+        }
+        media = extract_media(s)
+        assert media["retweet"]["author"] == "A"
+        assert media["retweet"]["media"]["retweet"] is None  # inner not expanded
+
+    def test_empty_status(self):
+        m = extract_media({})
+        assert m == {"images": [], "video": None, "links": [], "retweet": None}
+
+    def test_all_image_urls_includes_retweet(self):
+        s = {
+            "pic_ids": ["a"], "pic_infos": {"a": {"largest": {"url": "OWN"}}},
+            "retweeted_status": {
+                "user": {"screen_name": "x"}, "text_raw": "t",
+                "pic_ids": ["b"], "pic_infos": {"b": {"largest": {"url": "RT"}}},
+            },
+        }
+        assert all_image_urls(s) == ["OWN", "RT"]
+
+    def test_all_image_urls_empty(self):
+        assert all_image_urls({"text_raw": "no pics"}) == []
+
+
+class TestFullTextRich:
+    def test_appends_image_line(self):
+        s = {"text_raw": "看图", "pic_ids": ["a"], "pic_infos": {"a": {"largest": {"url": "IMG"}}}}
+        out = full_text_rich(s)
+        assert "看图" in out
+        assert "📷 IMG" in out
+
+    def test_appends_video_line(self):
+        s = {"text_raw": "看视频", "page_info": {"object_type": "video", "object_id": "1034:42"}}
+        out = full_text_rich(s)
+        assert "🎬 https://video.weibo.com/show?fid=1034:42" in out
+
+    def test_repost_block(self):
+        s = {
+            "text_raw": "引起舒适",
+            "retweeted_status": {"user": {"screen_name": "原作者"}, "text_raw": "原文内容"},
+        }
+        out = full_text_rich(s)
+        assert "引起舒适" in out
+        # Repost rendered as a Markdown blockquote: every quoted line prefixed "> ".
+        assert "> ↩️ 转发自 @原作者:" in out
+        assert "> 原文内容" in out
+
+    def test_repost_multiline_all_quoted(self):
+        s = {
+            "text_raw": "转",
+            "retweeted_status": {"user": {"screen_name": "作者"}, "text_raw": "第一行\n第二行"},
+        }
+        out = full_text_rich(s)
+        assert "> 第一行" in out
+        assert "> 第二行" in out
+
+    def test_plain_weibo_unchanged(self):
+        s = {"text_raw": "普通微博"}
+        assert full_text_rich(s) == "普通微博"
+
+
+# ── to_markdown tests ────────────────────────────────────────────────
+
+
+class TestToMarkdown:
+    def _sample(self):
+        return {
+            "mblogid": "R9EM6ApWL",
+            "user": {"idstr": "5648162302", "screen_name": "x"},
+            "created_at": "Tue Jul 21 07:20:00 +0800 2026",
+            "isLongText": True,
+            "comments_count": 8,
+            "reposts_count": 41,
+            "attitudes_count": 46,
+            "text_raw": "正文内容",
+        }
+
+    def test_has_frontmatter_delimiters(self):
+        md = to_markdown(self._sample())
+        assert md.startswith("---\n")
+        assert "\n---\n" in md
+
+    def test_frontmatter_fields(self):
+        md = to_markdown(self._sample())
+        assert "mblogid: R9EM6ApWL" in md
+        assert "url: https://weibo.com/5648162302/R9EM6ApWL" in md
+        assert "created_at: 2026-07-21 07:20:00" in md
+        assert "is_long_text: true" in md
+        assert "comments_count: 8" in md
+        assert "reposts_count: 41" in md
+        assert "attitudes_count: 46" in md
+
+    def test_body_after_frontmatter(self):
+        md = to_markdown(self._sample())
+        header, _, body = md.partition("\n---\n\n")
+        assert body.strip() == "正文内容"
+
+    def test_is_long_text_false_lowercase(self):
+        s = self._sample()
+        s["isLongText"] = False
+        assert "is_long_text: false" in to_markdown(s)
+
+    def test_url_empty_when_no_uid(self):
+        s = self._sample()
+        s["user"] = {}
+        assert "url: \n" in to_markdown(s) or "url:\n" in to_markdown(s)
+
+    def test_media_in_body(self):
+        s = self._sample()
+        s["pic_ids"] = ["a"]
+        s["pic_infos"] = {"a": {"largest": {"url": "IMG"}}}
+        md = to_markdown(s)
+        assert "📷 IMG" in md
 
 
 # ── full_text tests ──────────────────────────────────────────────────

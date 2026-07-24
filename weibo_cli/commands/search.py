@@ -2,18 +2,31 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from urllib.parse import urlparse
+
 import click
-from rich.panel import Panel
 from rich.table import Table
 
-from ._common import console, format_count, full_text, handle_command, require_auth, structured_output_options
+from ._common import (
+    all_image_urls,
+    console,
+    extract_media,
+    format_count,
+    handle_command,
+    require_auth,
+    structured_output_options,
+    to_markdown,
+)
+from ..client import WeiboClient
+from ..exceptions import WeiboApiError
 from .renderers import render_comment_list, render_weibo_list
 
 
 @click.command(name="hot")
 @click.option("--count", "-n", default=50, help="条数 (默认50)")
 @structured_output_options
-def hot(count, as_json, as_yaml):
+def hot(count, as_json, as_yaml, as_md):
     """查看微博热搜榜 🔥"""
     from ..auth import get_credential
 
@@ -43,13 +56,13 @@ def hot(count, as_json, as_yaml):
     def _action(client):
         return client.get_hot_search()
 
-    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml, as_md=as_md)
 
 
 @click.command()
 @click.option("--count", "-n", default=10, help="条数 (1-20)")
 @structured_output_options
-def feed(count, as_json, as_yaml):
+def feed(count, as_json, as_yaml, as_md):
     """查看热门微博 Feed 📰"""
     from ..auth import get_credential
 
@@ -62,52 +75,74 @@ def feed(count, as_json, as_yaml):
     def _action(client):
         return client.get_hot_timeline(count=min(count, 20))
 
-    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml, as_md=as_md)
 
 
 @click.command()
 @click.argument("mblogid")
 @structured_output_options
-def detail(mblogid, as_json, as_yaml):
+def detail(mblogid, as_json, as_yaml, as_md):
     """查看微博详情 (weibo detail <mblogid>)"""
     cred = require_auth()
 
     def _render(data):
-        user = data.get("user", {})
-        name = user.get("screen_name", "未知")
-        verified = " ✓" if user.get("verified") else ""
-        text = full_text(data)
-        source = data.get("source", "")
-        created = data.get("created_at", "")
-        reposts = data.get("reposts_count", 0)
-        comments_count = data.get("comments_count", 0)
-        likes = data.get("attitudes_count", 0)
-        reads = data.get("reads_count", 0)
-
-        content = f"[bold cyan]{name}{verified}[/bold cyan]"
-        if user.get("verified_reason"):
-            content += f"  [dim]{user['verified_reason']}[/dim]"
-        content += f"\n[dim]{created}  via {source}[/dim]\n\n"
-        content += f"{text}\n\n"
-
-        if data.get("pic_ids"):
-            content += f"[dim]📷 {len(data['pic_ids'])} 张图片[/dim]\n"
-
-        content += f"👁 {reads}  💬 {comments_count}  🔁 {reposts}  ❤️ {likes}"
-
-        console.print(Panel(content, title=f"微博 {data.get('mblogid', '')}", border_style="cyan", padding=(0, 1)))
+        click.echo(to_markdown(data))
 
     def _action(client):
-        return client.get_weibo_detail(mblogid)
+        data = client.get_weibo_detail(mblogid)
+        if isinstance(data, dict):
+            data["media"] = extract_media(data)
+        return data
 
-    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml, as_md=as_md)
+
+
+@click.command()
+@click.argument("mblogid")
+@click.option("--output", "-o", "output_dir", default=None, help="保存目录 (默认 ./<mblogid>/)")
+def download(mblogid, output_dir):
+    """下载微博的所有图片 (weibo download <mblogid>)
+
+    含转发原微博的图片。图片带微博 Referer 下载以绕过防盗链。
+    """
+    cred = require_auth()
+
+    dest = Path(output_dir) if output_dir else Path(mblogid)
+
+    try:
+        with WeiboClient(cred) as client:
+            data = client.get_weibo_detail(mblogid)
+            urls = all_image_urls(data) if isinstance(data, dict) else []
+
+            if not urls:
+                console.print("[yellow]该微博没有图片[/yellow]")
+                return
+
+            dest.mkdir(parents=True, exist_ok=True)
+            console.print(f"[dim]找到 {len(urls)} 张图片，保存到 {dest}/[/dim]")
+
+            ok = 0
+            for i, url in enumerate(urls, 1):
+                name = Path(urlparse(url).path).name or f"{mblogid}_{i}.jpg"
+                target = dest / f"{i:02d}_{name}"
+                try:
+                    target.write_bytes(client.download_bytes(url))
+                    console.print(f"  [green]✓[/green] {target.name}")
+                    ok += 1
+                except WeiboApiError as exc:
+                    console.print(f"  [red]✗[/red] 第 {i} 张失败: {exc}")
+
+            console.print(f"[green]完成：{ok}/{len(urls)} 张[/green]")
+
+    except WeiboApiError as exc:
+        console.print(f"[red]❌ {exc}[/red]")
 
 
 @click.command()
 @click.argument("mblogid")
 @click.option("--count", "-n", default=20, help="评论条数")
 @structured_output_options
-def comments(mblogid, count, as_json, as_yaml):
+def comments(mblogid, count, as_json, as_yaml, as_md):
     """查看微博评论 (weibo comments <mblogid>)"""
     cred = require_auth()
 
@@ -120,13 +155,13 @@ def comments(mblogid, count, as_json, as_yaml):
         weibo_id = str(weibo.get("id", weibo.get("mid", "")))
         return client.get_comments(weibo_id, count=count)
 
-    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml, as_md=as_md)
 
 
 @click.command()
 @click.option("--count", "-n", default=16, help="条数 (默认16)")
 @structured_output_options
-def trending(count, as_json, as_yaml):
+def trending(count, as_json, as_yaml, as_md):
     """查看实时搜索趋势 📈"""
     from ..auth import get_credential
 
@@ -149,7 +184,7 @@ def trending(count, as_json, as_yaml):
     def _action(client):
         return client.get_search_band()
 
-    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml, as_md=as_md)
 
 
 @click.command()
@@ -157,7 +192,7 @@ def trending(count, as_json, as_yaml):
 @click.option("--count", "-n", default=10, help="显示条数")
 @click.option("--page", "-p", default=1, help="页码")
 @structured_output_options
-def search(keyword, count, page, as_json, as_yaml):
+def search(keyword, count, page, as_json, as_yaml, as_md):
     """搜索微博 (weibo search <关键词>) 🔍"""
     from ..auth import get_credential
 
@@ -194,4 +229,4 @@ def search(keyword, count, page, as_json, as_yaml):
     def _action(client):
         return client.search_weibo(keyword, page=page)
 
-    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml, as_md=as_md)

@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import click
 from rich.panel import Panel
 
-from ._common import console, format_count, handle_command, parse_weibo_time, require_auth, structured_output_options
+from ._common import (
+    console,
+    extract_media,
+    format_count,
+    handle_command,
+    parse_weibo_time,
+    require_auth,
+    structured_output_options,
+    to_markdown,
+)
+from ..client import WeiboClient
 from ..exceptions import WeiboApiError
 from .renderers import render_repost_list, render_user_table, render_weibo_list
 
@@ -30,10 +42,65 @@ def _extract_statuses(data) -> list[dict]:
     return []
 
 
+def collect_since(client, uid, *, since_id=None, cutoff=None, max_pages=_MAX_SINCE_PAGES, fetch_full=False) -> list[dict]:
+    """Page a user's weibos (newest-first), collecting those newer than a cursor
+    or within a time window, then optionally enrich long ones + attach media.
+
+    Exactly one of `since_id` (cursor mblogid) or `cutoff` (aware datetime) drives
+    the stop condition; if both are None, collects up to max_pages.
+    """
+    collected: list[dict] = []
+    for page in range(1, max_pages + 1):
+        data = client.get_user_weibos(uid, page=page, count=20)
+        statuses = _extract_statuses(data)
+        if not statuses:
+            break
+
+        reached_end = False
+        for s in statuses:
+            # Cursor mode: stop as soon as we hit the cursor weibo itself.
+            if since_id and _weibo_id(s) == str(since_id):
+                reached_end = True
+                break
+            # Time mode: statuses are newest-first, so once one is older than
+            # the cutoff, everything after it is older too.
+            if cutoff is not None:
+                ts = parse_weibo_time(s.get("created_at", ""))
+                if ts is not None and ts < cutoff:
+                    reached_end = True
+                    break
+            collected.append(s)
+
+        if reached_end or len(statuses) < 20:
+            break
+
+    # Optionally enrich long weibos with their full body via the detail API.
+    if fetch_full:
+        for s in collected:
+            if not s.get("isLongText"):
+                continue
+            mblogid = _weibo_id(s)
+            if not mblogid:
+                continue
+            try:
+                detail = client.get_weibo_detail(mblogid)
+            except WeiboApiError:
+                continue  # keep the summary if a single detail fails
+            long_text = detail.get("longText")
+            if isinstance(long_text, dict):
+                s["longText"] = long_text
+
+    # Attach structured media/repost context.
+    for s in collected:
+        s["media"] = extract_media(s)
+
+    return collected
+
+
 @click.command()
 @click.argument("uid")
 @structured_output_options
-def profile(uid, as_json, as_yaml):
+def profile(uid, as_json, as_yaml, as_md):
     """查看用户资料 (weibo profile <uid>)"""
     cred = require_auth()
 
@@ -76,7 +143,7 @@ def profile(uid, as_json, as_yaml):
     def _action(client):
         return client.get_profile(uid)
 
-    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml, as_md=as_md)
 
 
 @click.command()
@@ -84,7 +151,7 @@ def profile(uid, as_json, as_yaml):
 @click.option("--page", "-p", default=1, help="页码")
 @click.option("--count", "-n", default=20, help="条数")
 @structured_output_options
-def weibos(uid, page, count, as_json, as_yaml):
+def weibos(uid, page, count, as_json, as_yaml, as_md):
     """查看用户微博列表 (weibo weibos <uid>)"""
     cred = require_auth()
 
@@ -95,14 +162,14 @@ def weibos(uid, page, count, as_json, as_yaml):
     def _action(client):
         return client.get_user_weibos(uid, page=page)
 
-    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml, as_md=as_md)
 
 
 @click.command()
 @click.argument("uid")
 @click.option("--page", "-p", default=1, help="页码")
 @structured_output_options
-def following(uid, page, as_json, as_yaml):
+def following(uid, page, as_json, as_yaml, as_md):
     """查看用户关注列表 (weibo following <uid>)"""
     cred = require_auth()
 
@@ -113,14 +180,14 @@ def following(uid, page, as_json, as_yaml):
     def _action(client):
         return client.get_following(uid, page=page)
 
-    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml, as_md=as_md)
 
 
 @click.command()
 @click.argument("uid")
 @click.option("--page", "-p", default=1, help="页码")
 @structured_output_options
-def followers(uid, page, as_json, as_yaml):
+def followers(uid, page, as_json, as_yaml, as_md):
     """查看用户粉丝列表 (weibo followers <uid>)"""
     cred = require_auth()
 
@@ -131,7 +198,7 @@ def followers(uid, page, as_json, as_yaml):
     def _action(client):
         return client.get_followers(uid, page=page)
 
-    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml, as_md=as_md)
 
 
 @click.command()
@@ -139,7 +206,7 @@ def followers(uid, page, as_json, as_yaml):
 @click.option("--count", "-n", default=10, help="转发条数")
 @click.option("--page", "-p", default=1, help="页码")
 @structured_output_options
-def reposts(mblogid, count, page, as_json, as_yaml):
+def reposts(mblogid, count, page, as_json, as_yaml, as_md):
     """查看微博转发 (weibo reposts <mblogid>)"""
     cred = require_auth()
 
@@ -152,13 +219,13 @@ def reposts(mblogid, count, page, as_json, as_yaml):
         weibo_id = str(weibo.get("id", weibo.get("mid", "")))
         return client.get_reposts(weibo_id, page=page, count=count)
 
-    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml, as_md=as_md)
 
 
 @click.command()
 @click.option("--count", "-n", default=20, help="条数 (1-50)")
 @structured_output_options
-def home(count, as_json, as_yaml):
+def home(count, as_json, as_yaml, as_md):
     """查看关注者 Feed (weibo home) 🏠"""
     cred = require_auth()
 
@@ -169,7 +236,7 @@ def home(count, as_json, as_yaml):
     def _action(client):
         return client.get_friends_timeline(count=min(count, 50))
 
-    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml, as_md=as_md)
 
 
 @click.command()
@@ -179,7 +246,7 @@ def home(count, as_json, as_yaml):
 @click.option("--max-pages", default=_MAX_SINCE_PAGES, help=f"最多翻页数 (默认 {_MAX_SINCE_PAGES})")
 @click.option("--full", "fetch_full", is_flag=True, help="对长微博自动补拉全文（每条长微博多一次请求，较慢）")
 @structured_output_options
-def since(uid, since_id, days, max_pages, fetch_full, as_json, as_yaml):
+def since(uid, since_id, days, max_pages, fetch_full, as_json, as_yaml, as_md):
     """增量拉取：某用户比 <mblogid> 更新的微博，或最近 N 天的微博
 
     \b
@@ -198,47 +265,8 @@ def since(uid, since_id, days, max_pages, fetch_full, as_json, as_yaml):
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
     def _action(client):
-        collected: list[dict] = []
-        for page in range(1, max_pages + 1):
-            data = client.get_user_weibos(uid, page=page, count=20)
-            statuses = _extract_statuses(data)
-            if not statuses:
-                break
-
-            reached_end = False
-            for s in statuses:
-                # Cursor mode: stop as soon as we hit the cursor weibo itself.
-                if since_id and _weibo_id(s) == str(since_id):
-                    reached_end = True
-                    break
-                # Time mode: statuses are newest-first, so once one is older
-                # than the cutoff, everything after it is older too.
-                if cutoff is not None:
-                    ts = parse_weibo_time(s.get("created_at", ""))
-                    if ts is not None and ts < cutoff:
-                        reached_end = True
-                        break
-                collected.append(s)
-
-            if reached_end or len(statuses) < 20:
-                break
-
-        # Optionally enrich long weibos with their full body via the detail API.
-        if fetch_full:
-            for s in collected:
-                if not s.get("isLongText"):
-                    continue
-                mblogid = _weibo_id(s)
-                if not mblogid:
-                    continue
-                try:
-                    detail = client.get_weibo_detail(mblogid)
-                except WeiboApiError:
-                    continue  # keep the summary if a single detail fails
-                long_text = detail.get("longText")
-                if isinstance(long_text, dict):
-                    s["longText"] = long_text
-
+        collected = collect_since(client, uid, since_id=since_id, cutoff=cutoff,
+                                  max_pages=max_pages, fetch_full=fetch_full)
         return {"uid": str(uid), "count": len(collected), "statuses": collected}
 
     def _render(data):
@@ -250,4 +278,139 @@ def since(uid, since_id, days, max_pages, fetch_full, as_json, as_yaml):
         console.print(header)
         render_weibo_list(statuses, count=len(statuses), show_user=False, empty_msg="[yellow]没有更新的微博[/yellow]")
 
-    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml, as_md=as_md)
+
+
+# ── Archive (batch incremental Markdown export) ─────────────────────
+
+# Matches archive filenames: 20260724_142500_Ra9Q6lN9q.md → captures the
+# YYYYmmdd_HHMMSS sort key and the mblogid.
+_ARCHIVE_FILE_RE = re.compile(r"^(\d{8}_\d{6})_(.+)\.md$")
+
+
+def _sanitize(name: str) -> str:
+    """Make a string safe for use as a path component."""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name or "")
+    return name.strip().strip(".") or "unknown"
+
+
+def parse_user_list(text: str) -> list[tuple[str, str]]:
+    """Parse a users file into [(uid, name), ...].
+
+    Each non-empty, non-comment line is 'uid,name' or 'uid'. Whitespace around
+    fields is trimmed; lines starting with '#' are comments.
+    """
+    users: list[tuple[str, str]] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in line.split(",", 1)]
+        uid = parts[0]
+        name = parts[1] if len(parts) > 1 and parts[1] else uid
+        if uid:
+            users.append((uid, name))
+    return users
+
+
+def _latest_archived_mblogid(user_dir: Path) -> str | None:
+    """The mblogid of the newest already-archived weibo in *user_dir*, by the
+    YYYYmmdd_HHMMSS prefix in the filename. None if the dir has no archive files.
+    """
+    best_key = ""
+    best_mblogid = None
+    if not user_dir.is_dir():
+        return None
+    for f in user_dir.iterdir():
+        if not f.is_file():
+            continue
+        m = _ARCHIVE_FILE_RE.match(f.name)
+        if m and m.group(1) > best_key:
+            best_key = m.group(1)
+            best_mblogid = m.group(2)
+    return best_mblogid
+
+
+def _archive_filename(status: dict) -> str | None:
+    """Build '{YYYYmmdd}_{HHMMSS}_{mblogid}.md' from a status; None if unusable."""
+    mblogid = _weibo_id(status)
+    dt = parse_weibo_time(status.get("created_at", ""))
+    if not mblogid or dt is None:
+        return None
+    return f"{dt.strftime('%Y%m%d_%H%M%S')}_{mblogid}.md"
+
+
+@click.command()
+@click.argument("users_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--days", default=1, help="首次抓取时的时间窗口（天，默认 1）")
+@click.option("--max-pages", default=_MAX_SINCE_PAGES, help=f"每个用户最多翻页数 (默认 {_MAX_SINCE_PAGES})")
+@click.option("--no-full", is_flag=True, help="不补拉长微博全文（默认补拉）")
+@click.option("--delay", default=2.5, show_default=True, help="请求最小间隔秒数（越大越安全越慢）")
+@click.option("--out", "out_dir", default="weibos", help="输出根目录 (默认 ./weibos)")
+def archive(users_file, days, max_pages, no_full, delay, out_dir):
+    """批量增量归档：把用户列表里每个人的新微博存成 Markdown 文件
+
+    \b
+    用户列表文件：每行 'uid,用户名'（# 开头为注释），例如：
+        1560906700,阑夕
+        1699432410,新华社
+
+    \b
+    输出结构：
+        weibos/{uid}_{name}/{YYYYmmdd}_{HHMMSS}_{mblogid}.md
+
+    每个用户首次抓取最近 --days 天；已有归档时，从文件名时间最大者的
+    mblogid 作游标，只抓比它更新的微博（增量）。
+    """
+    cred = require_auth()
+    fetch_full = not no_full
+
+    users = parse_user_list(Path(users_file).read_text(encoding="utf-8"))
+    if not users:
+        console.print("[yellow]用户列表为空[/yellow]")
+        return
+
+    root = Path(out_dir)
+    root.mkdir(parents=True, exist_ok=True)
+
+    total_new = 0
+    try:
+        with WeiboClient(cred, request_delay=delay) as client:
+            for uid, name in users:
+                user_dir = root / f"{_sanitize(uid)}_{_sanitize(name)}"
+                user_dir.mkdir(parents=True, exist_ok=True)
+
+                cursor = _latest_archived_mblogid(user_dir)
+                if cursor:
+                    console.print(f"[dim]@{name} ({uid})：增量，游标 {cursor}[/dim]")
+                    cutoff = None
+                else:
+                    console.print(f"[dim]@{name} ({uid})：首次，最近 {days} 天[/dim]")
+                    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+                try:
+                    statuses = collect_since(client, uid, since_id=cursor, cutoff=cutoff,
+                                             max_pages=max_pages, fetch_full=fetch_full)
+                except WeiboApiError as exc:
+                    console.print(f"  [red]✗ 抓取失败：{exc}[/red]")
+                    continue
+
+                written = 0
+                for s in statuses:
+                    fname = _archive_filename(s)
+                    if not fname:
+                        continue
+                    target = user_dir / fname
+                    if target.exists():
+                        continue  # already archived
+                    target.write_text(to_markdown(s), encoding="utf-8")
+                    written += 1
+
+                total_new += written
+                console.print(f"  [green]+{written}[/green] 条新微博 → {user_dir}/")
+
+    except WeiboApiError as exc:
+        console.print(f"[red]❌ {exc}[/red]")
+        return
+
+    console.print(f"[green]完成：共 {total_new} 条新微博，{len(users)} 个用户[/green]")

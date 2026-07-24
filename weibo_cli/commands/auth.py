@@ -66,7 +66,7 @@ def logout():
 
 @click.command()
 @structured_output_options
-def status(as_json, as_yaml):
+def status(as_json, as_yaml, as_md):
     """查看当前登录状态"""
     import sys
 
@@ -94,7 +94,7 @@ def status(as_json, as_yaml):
 
 @click.command()
 @structured_output_options
-def me(as_json, as_yaml):
+def me(as_json, as_yaml, as_md):
     """查看个人资料"""
     cred = require_auth()
 
@@ -135,4 +135,4 @@ def me(as_json, as_yaml):
             pass
         return {"error": "无法获取个人资料，请确认已登录"}
 
-    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml)
+    handle_command(cred, action=_action, render=_render, as_json=as_json, as_yaml=as_yaml, as_md=as_md)

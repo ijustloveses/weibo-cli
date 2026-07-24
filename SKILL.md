@@ -177,7 +177,7 @@ Structured error codes returned in CLI output:
 - **Read-only** — no posting, liking, or retweeting
 - **No DMs** — cannot access private messages
 - **Single account** — one set of credentials at a time
-- **Rate limited** — built-in Gaussian jitter delay (~1s) between requests
+- **Rate limited** — built-in ~2.5s spacing + Gaussian jitter between requests
 
 ## Anti-Detection Notes for Agents
 

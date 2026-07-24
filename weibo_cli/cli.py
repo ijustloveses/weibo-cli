@@ -43,6 +43,7 @@ cli.add_command(auth.me)
 cli.add_command(search.hot)
 cli.add_command(search.feed)
 cli.add_command(search.detail)
+cli.add_command(search.download)
 cli.add_command(search.comments)
 cli.add_command(search.trending)
 cli.add_command(search.search)
@@ -56,6 +57,7 @@ cli.add_command(personal.followers)
 cli.add_command(personal.reposts)
 cli.add_command(personal.home)
 cli.add_command(personal.since)
+cli.add_command(personal.archive)
 
 
 if __name__ == "__main__":

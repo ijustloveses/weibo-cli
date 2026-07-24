@@ -40,7 +40,7 @@ class WeiboClient:
     """Weibo API client with Gaussian jitter, exponential backoff, and session-stable identity.
 
     Anti-detection strategy:
-    - Gaussian jitter delay between requests (~1s mean, σ=0.3)
+    - Minimum ~2.5s spacing between requests, plus Gaussian jitter (~0.5s mean)
     - 5% chance of a random long pause (2-5s) to mimic reading behavior
     - Exponential backoff on HTTP 429/5xx (up to 3 retries)
     - Response cookies merged back into session jar
@@ -50,7 +50,7 @@ class WeiboClient:
         self,
         credential: Credential | None = None,
         timeout: float = 30.0,
-        request_delay: float = 1.0,
+        request_delay: float = 2.5,
         max_retries: int = 3,
     ):
         self.credential = credential
@@ -97,7 +97,7 @@ class WeiboClient:
             return
         elapsed = time.time() - self._last_request_time
         if elapsed < self._request_delay:
-            jitter = max(0, random.gauss(0.3, 0.15))
+            jitter = max(0, random.gauss(0.5, 0.2))
             if random.random() < 0.05:
                 jitter += random.uniform(2.0, 5.0)
             sleep_time = self._request_delay - elapsed + jitter
@@ -302,3 +302,29 @@ class WeiboClient:
     def get_config(self) -> dict[str, Any]:
         """Get app configuration (contains current user info)."""
         return self._get(GET_CONFIG_URL, action="配置")
+
+    # ── Media download ──────────────────────────────────────────────
+
+    def download_bytes(self, url: str) -> bytes:
+        """Download a media URL as raw bytes.
+
+        Sina's image CDN (wx*.sinaimg.cn) enforces Referer-based hotlink
+        protection, so we send Referer: https://weibo.com/ (already in HEADERS).
+        Rate limiting and retry from _request are reused via a direct call.
+        """
+        self._rate_limit_delay()
+        last_exc: Exception | None = None
+        for attempt in range(self._max_retries):
+            try:
+                resp = self.client.get(url)
+                self._mark_request()
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    wait = (2 ** attempt) + random.uniform(0, 1)
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                return resp.content
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                last_exc = exc
+                time.sleep((2 ** attempt) + random.uniform(0, 1))
+        raise WeiboApiError(f"Download failed: {url[:60]} ({last_exc})") from last_exc
