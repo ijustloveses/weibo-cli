@@ -169,6 +169,12 @@ class WeiboClient:
                     time.sleep(wait)
                     continue
 
+                # 4xx are client errors (bad uid/params) — not retryable; wrap
+                # them as WeiboApiError so callers can handle them uniformly
+                # instead of a raw httpx exception leaking out.
+                if 400 <= resp.status_code < 500:
+                    raise WeiboApiError(f"HTTP {resp.status_code} for {url[:80]}", code=resp.status_code)
+
                 resp.raise_for_status()
                 text = resp.text
                 if text.startswith("<"):

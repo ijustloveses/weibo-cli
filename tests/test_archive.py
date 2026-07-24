@@ -202,6 +202,41 @@ class TestArchiveCommand:
         assert result.exit_code == 0
         assert "找不到用户列表文件" in result.output
 
+    def test_skips_non_numeric_uid(self, tmp_path, monkeypatch, patched_auth):
+        # Reversed 'name,uid' format → first field isn't numeric → skip with hint.
+        called = {"n": 0}
+
+        def fake_weibos(self, uid, page=1, count=20, feature=0):
+            called["n"] += 1
+            return {"list": []}
+
+        monkeypatch.setattr("weibo_cli.client.WeiboClient.get_user_weibos", fake_weibos)
+        users = tmp_path / "users.txt"
+        users.write_text("李楠或kkk", encoding="utf-8")  # no uid
+
+        result = CliRunner().invoke(cli, ["archive", str(users), "--out", str(tmp_path / "weibos")])
+        assert result.exit_code == 0
+        assert "uid 应为纯数字" in result.output
+        assert called["n"] == 0  # never hit the API
+
+    def test_one_bad_user_does_not_abort_others(self, tmp_path, monkeypatch, patched_auth):
+        from weibo_cli.exceptions import WeiboApiError as _WErr
+
+        def fake_collect(client, uid, **kw):
+            if uid == "111":
+                raise _WErr("HTTP 400 for ...")
+            return [_status("OK", hours_ago=1)]
+
+        monkeypatch.setattr("weibo_cli.commands.personal.collect_since", fake_collect)
+        users = tmp_path / "users.txt"
+        users.write_text("111,坏用户\n222,好用户", encoding="utf-8")
+        out = tmp_path / "weibos"
+
+        result = CliRunner().invoke(cli, ["archive", str(users), "--out", str(out)])
+        assert result.exit_code == 0
+        assert "抓取失败" in result.output          # bad user reported
+        assert list((out / "222_好用户").glob("*_OK.md"))  # good user still archived
+
     def test_rerun_writes_nothing_new(self, tmp_path, monkeypatch, patched_auth):
         rows = [_status("A", hours_ago=1)]
         monkeypatch.setattr("weibo_cli.client.WeiboClient.get_user_weibos",

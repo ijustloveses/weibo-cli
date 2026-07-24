@@ -51,6 +51,7 @@ def collect_since(client, uid, *, since_id=None, cutoff=None, max_pages=_MAX_SIN
     the stop condition; if both are None, collects up to max_pages.
     """
     collected: list[dict] = []
+    seen_ids: set[str] = set()
     for page in range(1, max_pages + 1):
         data = client.get_user_weibos(uid, page=page, count=20)
         statuses = _extract_statuses(data)
@@ -59,17 +60,33 @@ def collect_since(client, uid, *, since_id=None, cutoff=None, max_pages=_MAX_SIN
 
         reached_end = False
         for s in statuses:
-            # Cursor mode: stop as soon as we hit the cursor weibo itself.
+            is_pinned = bool(s.get("isTop"))
+
+            # Cursor mode: stop as soon as we hit the cursor weibo itself —
+            # but a pinned weibo is out of chronological order, so it must not
+            # trigger the stop (it may sit above much newer posts).
             if since_id and _weibo_id(s) == str(since_id):
+                if is_pinned:
+                    continue
                 reached_end = True
                 break
+
             # Time mode: statuses are newest-first, so once one is older than
-            # the cutoff, everything after it is older too.
+            # the cutoff everything after it is older too — EXCEPT a pinned
+            # weibo, whose old date says nothing about the posts below it.
             if cutoff is not None:
                 ts = parse_weibo_time(s.get("created_at", ""))
                 if ts is not None and ts < cutoff:
+                    if is_pinned:
+                        continue  # skip stale pin, keep scanning real posts
                     reached_end = True
                     break
+
+            wid = _weibo_id(s)
+            if wid and wid in seen_ids:
+                continue  # a pin can also appear again in its natural position
+            if wid:
+                seen_ids.add(wid)
             collected.append(s)
 
         if reached_end or len(statuses) < 20:
@@ -390,6 +407,12 @@ def archive(users_file, days, max_pages, no_full, delay, out_dir):
     try:
         with WeiboClient(cred, request_delay=delay) as client:
             for uid, name in users:
+                # uid must be numeric; a non-numeric uid usually means the file
+                # has 'name,uid' reversed or is missing the uid.
+                if not str(uid).isdigit():
+                    console.print(f"  [yellow]⚠ 跳过 '{uid},{name}'：uid 应为纯数字（每行格式是 'uid,用户名'）[/yellow]")
+                    continue
+
                 user_dir = root / f"{_sanitize(uid)}_{_sanitize(name)}"
                 user_dir.mkdir(parents=True, exist_ok=True)
 

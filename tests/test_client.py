@@ -249,6 +249,18 @@ class TestRetryBehavior:
         result = mock_client._request("GET", "/ajax/test")
         assert result == {"ok": 1}
 
+    def test_4xx_wrapped_as_weibo_error(self, mock_client):
+        # A 400 (e.g. bad uid) must surface as WeiboApiError, not raw httpx,
+        # and must not be retried.
+        resp = MagicMock()
+        resp.status_code = 400
+        resp.cookies = httpx.Cookies()
+        mock_client._http.request.return_value = resp
+
+        with pytest.raises(WeiboApiError, match="HTTP 400"):
+            mock_client._request("GET", "/ajax/statuses/mymblog")
+        assert mock_client._http.request.call_count == 1  # no retry on 4xx
+
     def test_html_response_raises_error(self, mock_client):
         html_resp = MagicMock()
         html_resp.status_code = 200

@@ -52,12 +52,15 @@ class TestFormatWeiboTime:
 # ── since command: pagination + filtering ────────────────────────────
 
 
-def _status(mblogid, *, hours_ago=0):
+def _status(mblogid, *, hours_ago=0, pinned=False):
     """Build a fake status dated `hours_ago` before now (UTC)."""
     ts = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
     # Weibo's created_at format, always +0000 to keep it deterministic.
     created = ts.strftime("%a %b %d %H:%M:%S +0000 %Y")
-    return {"mblogid": mblogid, "mid": f"mid_{mblogid}", "created_at": created, "text_raw": f"post {mblogid}"}
+    s = {"mblogid": mblogid, "mid": f"mid_{mblogid}", "created_at": created, "text_raw": f"post {mblogid}"}
+    if pinned:
+        s["isTop"] = 1
+    return s
 
 
 @pytest.fixture
@@ -129,6 +132,60 @@ class TestSinceTimeWindow:
         assert result.exit_code == 0
         assert '"count": 0' in result.output
         assert calls["n"] == 1  # never paged to page 2
+
+
+class TestSincePinned:
+    def test_stale_pin_does_not_stop_time_scan(self, monkeypatch, patched_auth):
+        # A very old pinned weibo sits at the top; real recent posts follow.
+        # The stale pin must NOT end the scan.
+        page1 = [
+            _status("PIN", hours_ago=9000, pinned=True),  # ~1yr old, pinned
+            _status("new1", hours_ago=1),
+            _status("new2", hours_ago=3),
+        ]
+        result, _ = _run_since(monkeypatch, [page1], [])
+        assert result.exit_code == 0
+        assert '"new1"' in result.output
+        assert '"new2"' in result.output
+        # Stale pin excluded (older than 1 day); recent posts captured.
+        assert '"PIN"' not in result.output
+        assert '"count": 2' in result.output
+
+    def test_recent_pin_is_captured(self, monkeypatch, patched_auth):
+        # If the pinned weibo is itself recent, it should be included.
+        page1 = [
+            _status("PIN", hours_ago=2, pinned=True),
+            _status("new1", hours_ago=1),
+        ]
+        result, _ = _run_since(monkeypatch, [page1], [])
+        assert result.exit_code == 0
+        assert '"PIN"' in result.output
+        assert '"new1"' in result.output
+        assert '"count": 2' in result.output
+
+    def test_pin_does_not_falsely_match_cursor_stop(self, monkeypatch, patched_auth):
+        # Cursor mode: the real cursor sits below the pin. Scan must reach it
+        # (not stop at the pin) and exclude the cursor itself.
+        page1 = [
+            _status("PIN", hours_ago=9000, pinned=True),
+            _status("new1", hours_ago=1),
+            _status("CURSOR", hours_ago=5),
+            _status("older", hours_ago=8),
+        ]
+        result, _ = _run_since(monkeypatch, [page1], ["--since", "CURSOR"])
+        assert result.exit_code == 0
+        assert '"new1"' in result.output       # newer than cursor → kept
+        assert '"CURSOR"' not in result.output  # cursor itself excluded
+        assert '"older"' not in result.output   # below cursor → not reached
+
+    def test_pin_not_double_counted(self, monkeypatch, patched_auth):
+        # A pin can appear both at the top and in its natural position; dedup.
+        pin_top = _status("DUP", hours_ago=2, pinned=True)
+        pin_natural = _status("DUP", hours_ago=2)  # same id, no pin flag
+        page1 = [pin_top, _status("new1", hours_ago=1), pin_natural]
+        result, _ = _run_since(monkeypatch, [page1], [])
+        assert result.exit_code == 0
+        assert '"count": 2' in result.output  # DUP once + new1
 
 
 # ── since --full: long-text enrichment ───────────────────────────────
