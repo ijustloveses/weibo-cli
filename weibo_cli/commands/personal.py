@@ -20,6 +20,7 @@ from ._common import (
     to_markdown,
 )
 from ..client import WeiboClient
+from ..constants import DEFAULT_USERS_FILE
 from ..exceptions import WeiboApiError
 from .renderers import render_repost_list, render_user_table, render_weibo_list
 
@@ -341,7 +342,7 @@ def _archive_filename(status: dict) -> str | None:
 
 
 @click.command()
-@click.argument("users_file", type=click.Path(exists=True, dir_okay=False))
+@click.argument("users_file", required=False, type=click.Path(dir_okay=False))
 @click.option("--days", default=1, help="首次抓取时的时间窗口（天，默认 1）")
 @click.option("--max-pages", default=_MAX_SINCE_PAGES, help=f"每个用户最多翻页数 (默认 {_MAX_SINCE_PAGES})")
 @click.option("--no-full", is_flag=True, help="不补拉长微博全文（默认补拉）")
@@ -356,6 +357,9 @@ def archive(users_file, days, max_pages, no_full, delay, out_dir):
         1699432410,新华社
 
     \b
+    不指定文件时，默认读取 ~/.config/weibo-cli/users.txt
+
+    \b
     输出结构：
         weibos/{uid}_{name}/{YYYYmmdd}_{HHMMSS}_{mblogid}.md
 
@@ -365,7 +369,16 @@ def archive(users_file, days, max_pages, no_full, delay, out_dir):
     cred = require_auth()
     fetch_full = not no_full
 
-    users = parse_user_list(Path(users_file).read_text(encoding="utf-8"))
+    users_path = Path(users_file) if users_file else DEFAULT_USERS_FILE
+    if not users_path.is_file():
+        if users_file:
+            console.print(f"[red]❌ 找不到用户列表文件：{users_path}[/red]")
+        else:
+            console.print(f"[yellow]未指定用户列表，且默认文件不存在：{users_path}[/yellow]")
+            console.print("  提示：在该路径创建 users.txt（每行 'uid,用户名'），或用 weibo archive <文件> 指定")
+        return
+
+    users = parse_user_list(users_path.read_text(encoding="utf-8"))
     if not users:
         console.print("[yellow]用户列表为空[/yellow]")
         return

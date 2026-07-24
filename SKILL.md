@@ -73,15 +73,16 @@ weibo login
 weibo hot                              # Pretty table output
 ```
 
-### JSON / YAML: structured output
+### JSON / YAML / Markdown: structured output
 
 ```bash
 weibo hot --json                       # JSON to stdout
 weibo hot --yaml                       # YAML output
 weibo hot --json | jq '.realtime[:3]'  # Filter with jq
+weibo since 1699432410 --md            # Markdown with YAML frontmatter (weibo commands)
 ```
 
-Non-TTY stdout defaults to YAML automatically.
+Non-TTY stdout defaults to YAML automatically. `--md` (weibo-content commands like `since`/`detail`/`weibos`) emits Markdown regardless of TTY.
 
 ## Command Reference
 
@@ -99,7 +100,9 @@ Non-TTY stdout defaults to YAML automatically.
 | `weibo reposts <mblogid>` | View reposts/forwards | `weibo reposts Qw06Kd98p --count 5` |
 | `weibo profile <uid>` | User profile | `weibo profile 1699432410 --json` |
 | `weibo weibos <uid>` | User's published weibos | `weibo weibos 1699432410 --count 5` |
-| `weibo since <uid>` | Incremental: weibos newer than a cursor, or from the last N days. Add `--full` to auto-fetch full body for long weibos | `weibo since 1699432410 --since Qw06Kd98p --full --json` |
+| `weibo since <uid>` | Incremental: weibos newer than a cursor, or from the last N days. `--full` fetches long-text; `--md` outputs Markdown | `weibo since 1699432410 --since Qw06Kd98p --full --json` |
+| `weibo download <mblogid>` | Download all images of a weibo (incl. reposted original) with Referer bypass | `weibo download Qw06Kd98p -o ./imgs` |
+| `weibo archive [users_file]` | Batch incremental export to Markdown files. Defaults to `~/.config/weibo-cli/users.txt` | `weibo archive users.txt --days 3` |
 | `weibo following <uid>` | User's following list | `weibo following 1699432410` |
 | `weibo followers <uid>` | User's follower list | `weibo followers 1699432410` |
 
@@ -148,7 +151,19 @@ weibo since 1699432410 --json | jq -r '.statuses[0].mblogid'   # → save this c
 weibo since 1699432410 --since <saved_cursor> --json | jq '.statuses[] | {id: .mblogid, time: .created_at, text: .text_raw}'
 ```
 
-`since` returns statuses newest-first with a stable `mblogid`/`mid` per item, so it is safe for dedup and incremental tracking. Without `--since` it defaults to the last 1 day (`--days N` to widen).
+`since` returns statuses newest-first with a stable `mblogid`/`mid` per item, so it is safe for dedup and incremental tracking. Without `--since` it defaults to the last 1 day (`--days N` to widen). Each status carries a structured `media` field (`images`, `video`, `links`, `retweet`); body text has `#topic#` tags, `t.cn` links, and zero-width chars stripped. Add `--md` for Markdown output with a YAML frontmatter header, or `--full` to fill in long-text bodies.
+
+### Batch-archive many users to Markdown files
+
+```bash
+# Users list: ~/.config/weibo-cli/users.txt, one "uid,name" per line (# comments ok)
+#   1560906700,阑夕
+#   1699432410,新华社
+weibo archive                    # first run per user: last --days days (default 1)
+weibo archive                    # re-run later: incremental, resumes from newest archived file
+```
+
+Writes one Markdown file per weibo at `weibos/{uid}_{name}/{YYYYmmdd}_{HHMMSS}_{mblogid}.md` (frontmatter + full body, `--full` on by default). `weibos/` is relative to the current directory (or `--out DIR`). Idempotent: re-running only writes weibos newer than the latest already-archived file, so it is safe to schedule.
 
 ### Daily monitoring workflow
 

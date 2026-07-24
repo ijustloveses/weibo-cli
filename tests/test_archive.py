@@ -176,6 +176,32 @@ class TestArchiveCommand:
         assert "mblogid: A" in content
         assert "正文" in content
 
+    def test_default_users_file(self, tmp_path, monkeypatch, patched_auth):
+        # No file argument → reads DEFAULT_USERS_FILE.
+        default_file = tmp_path / "users.txt"
+        default_file.write_text("123,测试", encoding="utf-8")
+        monkeypatch.setattr("weibo_cli.commands.personal.DEFAULT_USERS_FILE", default_file)
+
+        rows = [_status("A", hours_ago=1)]
+        monkeypatch.setattr("weibo_cli.client.WeiboClient.get_user_weibos",
+                            lambda self, uid, page=1, count=20, feature=0: {"list": rows if page == 1 else []})
+        out = tmp_path / "weibos"
+
+        result = CliRunner().invoke(cli, ["archive", "--out", str(out)])
+        assert result.exit_code == 0, result.output
+        assert list((out / "123_测试").glob("*_A.md"))
+
+    def test_default_missing_gives_hint(self, tmp_path, monkeypatch, patched_auth):
+        monkeypatch.setattr("weibo_cli.commands.personal.DEFAULT_USERS_FILE", tmp_path / "nope.txt")
+        result = CliRunner().invoke(cli, ["archive"])
+        assert result.exit_code == 0
+        assert "默认文件不存在" in result.output
+
+    def test_explicit_missing_file_errors(self, tmp_path, monkeypatch, patched_auth):
+        result = CliRunner().invoke(cli, ["archive", str(tmp_path / "gone.txt")])
+        assert result.exit_code == 0
+        assert "找不到用户列表文件" in result.output
+
     def test_rerun_writes_nothing_new(self, tmp_path, monkeypatch, patched_auth):
         rows = [_status("A", hours_ago=1)]
         monkeypatch.setattr("weibo_cli.client.WeiboClient.get_user_weibos",

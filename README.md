@@ -31,10 +31,12 @@ A CLI for Weibo (微博) — search, browse hot topics, read timelines, and expl
 - Reposts: view forwards/reposts of any weibo
 - User profiles: view user info, stats, and bio
 - User weibos: browse a user's published weibos
-- Incremental fetch: get a user's weibos newer than a given one, or from the last N days (`since`)
+- Incremental fetch: get a user's weibos newer than a given one, or from the last N days (`since`), with full long-text (`--full`) and Markdown output (`--md`)
+- Batch archive: incrementally export many users' new weibos to Markdown files (`archive`)
 - Following: view a user's following list
 - Followers: view a user's follower list
-- Structured output: export any data as JSON or YAML for scripting and AI agent integration
+- Rich media & reposts: image/video URLs and quoted-weibo context surfaced in text and JSON
+- Structured output: export any data as JSON, YAML, or Markdown for scripting and AI agent integration
 
 > **AI Agent Tip:** Prefer `--yaml` for structured output unless strict JSON is required. Non-TTY stdout defaults to YAML automatically. Use `--count` to limit results.
 
@@ -143,10 +145,25 @@ weibo since <uid> --since <mblogid>    # Weibos newer than <mblogid>
 weibo since <uid>                      # Weibos from the last day
 weibo since <uid> --days 3             # Weibos from the last 3 days
 weibo since <uid> --full               # Auto-fetch full body for long weibos
+weibo since <uid> --full --md          # Markdown (YAML frontmatter) output
 weibo since 1699432410 --since Qw06Kd98p --json   # Structured, for tracking
+
+# ─── Batch Archive ──────────────────────────────
+weibo archive                          # Read ~/.config/weibo-cli/users.txt, save to ./weibos/
+weibo archive users.txt                # Use a specific user list
+weibo archive --days 3                 # First run grabs the last 3 days
+weibo archive --delay 4                # Slower pacing (4s min between requests)
+weibo archive --no-full                # Skip long-text enrichment (faster)
+weibo archive --out D:\backup          # Custom output root
 ```
 
-> The list API returns only a ~180-char preview for long weibos. Use `--full` to auto-fetch each long weibo's complete body via the detail API (one extra request per long weibo). Weibo `#topic#` tags are stripped from the returned text by default (Markdown and code spans are preserved).
+> **Long text:** the list API returns only a ~180-char preview for long weibos. Use `--full` to auto-fetch each long weibo's complete body via the detail API (one extra request per long weibo).
+>
+> **Text cleanup:** returned text has Weibo `#topic#` tags, `t.cn` short links, and zero-width chars stripped by default (Markdown and code spans are preserved). Rich media (image/video URLs) and reposted-weibo context are appended.
+>
+> **`--md` output:** each weibo becomes Markdown with a YAML frontmatter header (`mblogid`, `url`, `created_at` as `YYYY-mm-dd HH:MM:SS`, `is_long_text`, counts) followed by the body.
+>
+> **`archive`** exports each user's new weibos as one Markdown file per weibo under `weibos/{uid}_{name}/{YYYYmmdd}_{HHMMSS}_{mblogid}.md`. The user list defaults to `~/.config/weibo-cli/users.txt` — one `uid,name` per line (`#` comments allowed). First run per user grabs `--days` days; later runs are incremental, using the newest already-archived file as the cursor. `weibos/` is created relative to the current directory (or `--out`).
 
 ### Authentication
 
@@ -201,16 +218,17 @@ uv run pytest tests/ -v -m smoke
 ```text
 weibo_cli/
 ├── __init__.py
-├── cli.py             # Click entry point (17 commands)
-├── client.py          # WeiboClient (17 API methods, rate-limit, retry)
+├── cli.py             # Click entry point (19 commands)
+├── client.py          # WeiboClient (17 API methods, rate-limit, retry, media download)
 ├── auth.py            # QR login + browser-cookie3 + credential persistence
-├── constants.py       # API endpoints, headers, Chrome 145 UA
+├── constants.py       # API endpoints, headers, Chrome 145 UA, default users file
 ├── exceptions.py      # WeiboApiError hierarchy (6 error types)
 └── commands/
-    ├── _common.py     # structured_output_options, handle_command, strip_html, format_count
+    ├── _common.py     # output routing, to_markdown, media/topic-tag helpers
+    ├── renderers.py   # shared Markdown / table renderers
     ├── auth.py        # login/logout/status/me
-    ├── search.py      # hot/feed/detail/comments/trending/search
-    └── personal.py    # profile/weibos/following/followers/reposts/home/since
+    ├── search.py      # hot/feed/detail/download/comments/trending/search
+    └── personal.py    # profile/weibos/following/followers/reposts/home/since/archive
 ```
 
 ### Use as AI Agent Skill
@@ -257,10 +275,12 @@ git clone git@github.com:jackwener/weibo-cli.git .agents/skills/weibo-cli
 - 🔁 转发：查看微博转发
 - 👤 用户资料：用户信息和统计
 - 📋 用户微博：浏览用户已发布的微博列表
-- ⏱️ 增量拉取：获取比某条更新的微博，或最近 N 天的微博（`since`）
+- ⏱️ 增量拉取：获取比某条更新的微博，或最近 N 天的微博（`since`），支持长文补全（`--full`）和 Markdown 输出（`--md`）
+- 🗂️ 批量归档：把多个用户的新微博增量导出为 Markdown 文件（`archive`）
 - 👥 关注列表：查看用户的关注列表
 - 👥 粉丝列表：查看用户的粉丝列表
-- 📊 结构化输出：支持 JSON 和 YAML，便于脚本和 AI Agent 集成
+- 🖼️ 富媒体与转发：图片/视频链接、被转发微博的上下文在文本和 JSON 中一并呈现
+- 📊 结构化输出：支持 JSON、YAML、Markdown，便于脚本和 AI Agent 集成
 
 > **AI Agent 提示：** 需要结构化输出时优先使用 `--yaml`，除非下游必须是 JSON。stdout 不是 TTY 时默认输出 YAML。
 
@@ -338,9 +358,24 @@ weibo since 1699432410 --since Qw06Kd98p   # 比该条更新的所有微博
 weibo since 1699432410                      # 最近 1 天的微博
 weibo since 1699432410 --days 3             # 最近 3 天的微博
 weibo since 1699432410 --full               # 长微博自动补拉全文
+weibo since 1699432410 --full --md          # Markdown（YAML frontmatter）输出
+
+# 批量归档
+weibo archive                          # 读 ~/.config/weibo-cli/users.txt，存到 ./weibos/
+weibo archive users.txt                # 指定用户列表文件
+weibo archive --days 3                 # 首次抓最近 3 天
+weibo archive --delay 4                # 更慢更安全（请求最小间隔 4 秒）
+weibo archive --no-full                # 不补长文（更快）
+weibo archive --out D:\备份            # 自定义输出根目录
 ```
 
-> 列表接口对长微博只返回约 180 字摘要。加 `--full` 会对每条长微博通过详情接口补拉完整正文（每条长微博多一次请求）。返回文本默认已去除微博 `#话题#` 标签（保留 Markdown 与代码片段中的 `#`）。
+> **长文**：列表接口对长微博只返回约 180 字摘要。加 `--full` 会对每条长微博通过详情接口补拉完整正文（每条长微博多一次请求）。
+>
+> **文本清理**：返回文本默认已去除微博 `#话题#` 标签、`t.cn` 短链和零宽字符（保留 Markdown 与代码片段中的 `#`）；图片/视频链接、被转发微博的上下文会一并附上。
+>
+> **`--md` 输出**：每条微博输出为带 YAML frontmatter 抬头的 Markdown（`mblogid`、`url`、`created_at`（`YYYY-mm-dd HH:MM:SS`）、`is_long_text`、各计数）+ 正文。
+>
+> **`archive`（批量归档）**：把每个用户的新微博按 `weibos/{uid}_{name}/{YYYYmmdd}_{HHMMSS}_{mblogid}.md` 存成一条一个文件。用户列表默认读 `~/.config/weibo-cli/users.txt`，每行 `uid,用户名`（`#` 开头为注释）。每个用户首次抓 `--days` 天，之后增量——以已归档文件名时间最大者作游标。`weibos/` 相对当前目录创建（或用 `--out` 指定）。
 
 ### 常见问题
 

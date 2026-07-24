@@ -5,6 +5,8 @@ from pathlib import Path
 # ── Config ──────────────────────────────────────────────────────────
 CONFIG_DIR = Path.home() / ".config" / "weibo-cli"
 CREDENTIAL_FILE = CONFIG_DIR / "credential.json"
+# Default users list for `weibo archive` when no file argument is given.
+DEFAULT_USERS_FILE = CONFIG_DIR / "users.txt"
 
 # ── Base URLs ───────────────────────────────────────────────────────
 BASE_URL = "https://weibo.com"
