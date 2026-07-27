@@ -151,21 +151,32 @@ def _video_url(status: dict) -> str | None:
     return None
 
 
-def _expanded_links(status: dict) -> list[str]:
-    """Resolve t.cn short links to their long URLs.
+def _link_records(status: dict) -> list[dict]:
+    """Raw link records from url_struct: short_url, long_url, display string.
 
     Skips video.weibo.com links, since those are already surfaced as the
     weibo's video URL and would otherwise be listed twice.
     """
-    out: list[str] = []
+    out: list[dict] = []
     for u in status.get("url_struct") or []:
         if isinstance(u, dict) and u.get("long_url"):
             long_url = u["long_url"]
             if "video.weibo.com" in long_url:
                 continue
             title = u.get("url_title") or ""
-            out.append(f"{long_url}" + (f" ({title})" if title else ""))
+            out.append(
+                {
+                    "short_url": u.get("short_url") or "",
+                    "long_url": long_url,
+                    "display": f"{long_url}" + (f" ({title})" if title else ""),
+                }
+            )
     return out
+
+
+def _expanded_links(status: dict) -> list[str]:
+    """Resolve t.cn short links to their long URLs (display strings)."""
+    return [rec["display"] for rec in _link_records(status)]
 
 
 def extract_media(status: dict, *, _depth: int = 0) -> dict:
@@ -180,10 +191,11 @@ def extract_media(status: dict, *, _depth: int = 0) -> dict:
     subtract the original's media from the outer layer to avoid mis-attributing
     (and duplicating) them.
     """
+    outer_link_recs = _link_records(status)
     media: dict = {
         "images": _pic_urls(status),
         "video": _video_url(status),
-        "links": _expanded_links(status),
+        "links": [rec["display"] for rec in outer_link_recs],
         "retweet": None,
     }
     rt = status.get("retweeted_status")
@@ -192,6 +204,7 @@ def extract_media(status: dict, *, _depth: int = 0) -> dict:
         rt_media = extract_media(rt, _depth=1)
         media["retweet"] = {
             "author": user.get("screen_name"),
+            "uid": user.get("idstr") or user.get("id"),
             "mblogid": rt.get("mblogid"),
             "text": full_text(rt),
             "media": rt_media,
@@ -201,8 +214,32 @@ def extract_media(status: dict, *, _depth: int = 0) -> dict:
             media["video"] = None
         rt_images = set(rt_media.get("images") or [])
         media["images"] = [u for u in media["images"] if u not in rt_images]
-        rt_links = set(rt_media.get("links") or [])
-        media["links"] = [link for link in media["links"] if link not in rt_links]
+
+        # Links are trickier: in the waterfall (mymblog) Weibo attaches the
+        # SOURCE weibo's url_struct to the OUTER status while leaving the inner
+        # retweeted_status.url_struct empty — so plain outer-minus-inner
+        # subtraction can't catch it. A link genuinely authored by the reposter
+        # has its short_url (t.cn/...) present in the reposter's OWN raw text;
+        # an inherited source link does not. Keep only the former on the outer
+        # layer, and make sure inherited ones still show under the source block.
+        outer_own_text = status.get("text_raw") or status.get("text") or ""
+        rt_link_displays = set(rt_media.get("links") or [])
+        kept: list[str] = []
+        inherited: list[str] = []
+        for rec in outer_link_recs:
+            short = rec["short_url"]
+            display = rec["display"]
+            if display in rt_link_displays:
+                continue  # already attributed to the source
+            if short and short in outer_own_text:
+                kept.append(display)  # the reposter's own link
+            else:
+                inherited.append(display)  # belongs to the source
+        media["links"] = kept
+        if inherited:
+            src_media = media["retweet"]["media"]
+            existing = src_media.get("links") or []
+            src_media["links"] = existing + [x for x in inherited if x not in existing]
     return media
 
 
@@ -241,13 +278,20 @@ def full_text_rich(status: dict) -> str:
 
     rt = media.get("retweet")
     if rt:
-        # Render the quoted weibo as a Markdown blockquote (every line "> ").
-        block = [f"↩️ 转发自 @{rt.get('author') or '未知'}:"]
+        # Header line: source author + a Markdown link to the source weibo.
+        author = rt.get("author") or "未知"
+        src_id = rt.get("mblogid")
+        src_uid = rt.get("uid")
+        if src_id and src_uid:
+            url = f"https://weibo.com/{src_uid}/{src_id}"
+            header = f"↩️ 转发自 @{author}（[源微博]({url})）:"
+        else:
+            header = f"↩️ 转发自 @{author}:"
+        block = [header]
         if rt.get("text"):
             block.append(rt["text"])
         block.extend(_media_lines(rt.get("media") or {}))
-        quoted = "\n".join(block)
-        parts.append("\n".join(f"> {line}" if line else ">" for line in quoted.split("\n")))
+        parts.append("\n".join(block))
 
     return "\n\n".join(p for p in parts if p.strip())
 
@@ -255,8 +299,9 @@ def full_text_rich(status: dict) -> str:
 def to_markdown(status: dict) -> str:
     """Render a weibo as Markdown with a YAML frontmatter header.
 
-    The header carries the metadata (id, url, timestamps, counts); the body is
-    the full text plus media/repost annotations.
+    The header carries the stable metadata (id, url, timestamp, long-text flag);
+    the body is the full text plus media/repost annotations. Volatile engagement
+    counts (comments/reposts/attitudes) are intentionally omitted.
     """
     user = status.get("user") or {}
     uid = user.get("idstr") or user.get("id") or ""
@@ -269,9 +314,6 @@ def to_markdown(status: dict) -> str:
         f"url: {url}",
         f"created_at: {format_weibo_time(status.get('created_at', ''))}",
         f"is_long_text: {str(bool(status.get('isLongText'))).lower()}",
-        f"comments_count: {status.get('comments_count', 0)}",
-        f"reposts_count: {status.get('reposts_count', 0)}",
-        f"attitudes_count: {status.get('attitudes_count', 0)}",
         "---",
     ]
     body = full_text_rich(status)

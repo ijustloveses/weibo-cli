@@ -254,3 +254,35 @@ class TestSinceFull:
         assert result.exit_code == 0  # does not crash
         assert '"count": 1' in result.output
         assert "keep this preview" in result.output
+
+    def test_full_enriches_long_reposted_source(self, monkeypatch, patched_auth):
+        # A repost whose SOURCE weibo is long: the timeline gives a truncated
+        # source; --full must fetch the source's detail for its full body.
+        outer = _status("outer", hours_ago=1)
+        outer["text_raw"] = "转发理由"
+        outer["retweeted_status"] = {
+            "mblogid": "SRC", "mid": "mid_SRC", "isLongText": True,
+            "user": {"screen_name": "高飞", "idstr": "1233486457"},
+            "text_raw": "截断的源微博前半...",  # truncated in timeline
+            "created_at": outer["created_at"],
+        }
+
+        detail_calls = []
+
+        def fake_detail(self, mblogid):
+            detail_calls.append(mblogid)
+            if mblogid == "SRC":
+                return {"isLongText": True, "text_raw": "完整的源微博全文，长很多，一直到结尾。"}
+            return {}
+
+        monkeypatch.setattr("weibo_cli.client.WeiboClient.get_user_weibos",
+                            lambda self, uid, page=1, count=20, feature=0: {"list": [outer] if page == 1 else []})
+        monkeypatch.setattr("weibo_cli.client.WeiboClient.get_weibo_detail", fake_detail)
+
+        result = CliRunner().invoke(cli, ["since", "12345", "--json", "--full"])
+        assert result.exit_code == 0
+        # The source weibo's detail was fetched...
+        assert "SRC" in detail_calls
+        # ...and its full body replaced the truncated timeline text.
+        assert "完整的源微博全文" in result.output
+        assert "截断的源微博前半" not in result.output

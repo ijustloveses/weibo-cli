@@ -259,6 +259,50 @@ class TestExtractMedia:
         assert media["images"] == []  # deduped off outer
         assert media["retweet"]["media"]["images"] == ["SHARED"]
 
+    def test_waterfall_inherited_link_moved_to_source(self):
+        # Waterfall (mymblog) attaches the SOURCE's url_struct to the OUTER
+        # status while the inner retweeted_status.url_struct is empty. The link
+        # is not in the reposter's own text → it belongs to the source.
+        s = {
+            "text_raw": "还是回归线下消费吧//@某人:评论",  # no t.cn link of its own
+            "url_struct": [{
+                "short_url": "http://t.cn/AX9aIyEc",
+                "long_url": "https://weibo.com/ttarticle/p/show?id=2309405323914204545144",
+                "url_title": "线上女装最难的一年",
+            }],
+            "retweeted_status": {
+                "user": {"screen_name": "凤凰网财经", "idstr": "1988800805"},
+                "mblogid": "Ra3bEiVkh",
+                "text_raw": "【多家百万粉女装店相继闭店】...http://t.cn/AX9aIyEc",
+                "url_struct": [],  # empty in the waterfall
+            },
+        }
+        media = extract_media(s)
+        assert media["links"] == []  # not attributed to the reposter
+        rt_links = media["retweet"]["media"]["links"]
+        assert any("2309405323914204545144" in link for link in rt_links)
+
+    def test_reposter_own_link_stays_on_outer(self):
+        # A link whose short_url IS in the reposter's own text is genuinely
+        # theirs and must stay on the outer layer.
+        s = {
+            "text_raw": "看这个 http://t.cn/OWN123 很好//@x:评论",
+            "url_struct": [{
+                "short_url": "http://t.cn/OWN123",
+                "long_url": "https://example.com/mine",
+                "url_title": "我的链接",
+            }],
+            "retweeted_status": {
+                "user": {"screen_name": "x", "idstr": "1"},
+                "mblogid": "SRC",
+                "text_raw": "源微博正文",
+                "url_struct": [],
+            },
+        }
+        media = extract_media(s)
+        assert any("example.com/mine" in link for link in media["links"])
+        assert media["retweet"]["media"]["links"] == []
+
     def test_retweet_recursion_only_one_level(self):
         # A retweet inside a retweet must not recurse infinitely.
         s = {
@@ -304,22 +348,40 @@ class TestFullTextRich:
     def test_repost_block(self):
         s = {
             "text_raw": "引起舒适",
-            "retweeted_status": {"user": {"screen_name": "原作者"}, "text_raw": "原文内容"},
+            "retweeted_status": {
+                "user": {"screen_name": "原作者", "idstr": "999"},
+                "mblogid": "ORIGID",
+                "text_raw": "原文内容",
+            },
         }
         out = full_text_rich(s)
         assert "引起舒适" in out
-        # Repost rendered as a Markdown blockquote: every quoted line prefixed "> ".
-        assert "> ↩️ 转发自 @原作者:" in out
-        assert "> 原文内容" in out
+        # No blockquote "> " prefix any more; header links to the source weibo.
+        assert "> " not in out
+        assert "↩️ 转发自 @原作者" in out
+        assert "[源微博](https://weibo.com/999/ORIGID)" in out
+        assert "原文内容" in out
 
-    def test_repost_multiline_all_quoted(self):
+    def test_repost_multiline_not_quoted(self):
         s = {
             "text_raw": "转",
             "retweeted_status": {"user": {"screen_name": "作者"}, "text_raw": "第一行\n第二行"},
         }
         out = full_text_rich(s)
-        assert "> 第一行" in out
-        assert "> 第二行" in out
+        # Lines kept as-is, without any "> " prefix.
+        assert "第一行" in out
+        assert "第二行" in out
+        assert "> " not in out
+
+    def test_repost_without_ids_has_no_link(self):
+        # Missing uid/mblogid → header degrades gracefully, no broken link.
+        s = {
+            "text_raw": "转",
+            "retweeted_status": {"user": {"screen_name": "作者"}, "text_raw": "原文"},
+        }
+        out = full_text_rich(s)
+        assert "↩️ 转发自 @作者:" in out
+        assert "源微博" not in out
 
     def test_plain_weibo_unchanged(self):
         s = {"text_raw": "普通微博"}
@@ -353,9 +415,13 @@ class TestToMarkdown:
         assert "url: https://weibo.com/5648162302/R9EM6ApWL" in md
         assert "created_at: 2026-07-21 07:20:00" in md
         assert "is_long_text: true" in md
-        assert "comments_count: 8" in md
-        assert "reposts_count: 41" in md
-        assert "attitudes_count: 46" in md
+
+    def test_frontmatter_omits_volatile_counts(self):
+        # Engagement counts change over time → not persisted in frontmatter.
+        md = to_markdown(self._sample())
+        assert "comments_count" not in md
+        assert "reposts_count" not in md
+        assert "attitudes_count" not in md
 
     def test_body_after_frontmatter(self):
         md = to_markdown(self._sample())

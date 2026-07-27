@@ -93,26 +93,43 @@ def collect_since(client, uid, *, since_id=None, cutoff=None, max_pages=_MAX_SIN
             break
 
     # Optionally enrich long weibos with their full body via the detail API.
+    # This covers both the outer weibo AND a long reposted source weibo, whose
+    # text is truncated ("收起") in the timeline/mymblog response.
     if fetch_full:
         for s in collected:
-            if not s.get("isLongText"):
-                continue
-            mblogid = _weibo_id(s)
-            if not mblogid:
-                continue
-            try:
-                detail = client.get_weibo_detail(mblogid)
-            except WeiboApiError:
-                continue  # keep the summary if a single detail fails
-            long_text = detail.get("longText")
-            if isinstance(long_text, dict):
-                s["longText"] = long_text
+            _enrich_long_text(client, s)
+            rt = s.get("retweeted_status")
+            if isinstance(rt, dict):
+                _enrich_long_text(client, rt)
 
     # Attach structured media/repost context.
     for s in collected:
         s["media"] = extract_media(s)
 
     return collected
+
+
+def _enrich_long_text(client, status: dict) -> None:
+    """If *status* is a long weibo, fetch its detail and graft the full body
+    (longText) back in place. No-op for short weibos or on failure.
+    """
+    if not status.get("isLongText"):
+        return
+    mblogid = _weibo_id(status)
+    if not mblogid:
+        return
+    try:
+        detail = client.get_weibo_detail(mblogid)
+    except WeiboApiError:
+        return  # keep the summary if a single detail fails
+    long_text = detail.get("longText")
+    if isinstance(long_text, dict):
+        status["longText"] = long_text
+    # Some weibos carry the full body in text_raw of the detail response
+    # rather than longText.longTextContent; prefer the longer text_raw.
+    detail_text = detail.get("text_raw") or ""
+    if len(detail_text) > len(status.get("text_raw") or ""):
+        status["text_raw"] = detail_text
 
 
 @click.command()
