@@ -175,6 +175,26 @@ class TestStripTopicTags:
         link_map = {"http://t.cn/AX938lL9": "[标题](https://weibo.com/ttarticle/p/show?id=1)"}
         assert strip_topic_tags(text, link_map) == "文章：[标题](https://weibo.com/ttarticle/p/show?id=1)"
 
+    def test_tcn_inside_existing_markdown_link_keeps_anchor(self):
+        # The author already wrote [微博](t.cn/...). We must swap only the URL for
+        # the resolved long URL, NOT wrap it again into [微博]([title](url)).
+        text = "写了一篇 [微博](http://t.cn/AX9cPwZb)，很详细"
+        link_map = {"http://t.cn/AX9cPwZb": "[微博正文](https://weibo.com/5078115336/R9J11nr9S)"}
+        assert strip_topic_tags(text, link_map) == (
+            "写了一篇 [微博](https://weibo.com/5078115336/R9J11nr9S)，很详细"
+        )
+
+    def test_tcn_in_markdown_link_with_bare_url_map(self):
+        # Same, but the map value is a bare URL (untitled link).
+        text = "见 [这里](http://t.cn/ABC) 结束"
+        link_map = {"http://t.cn/ABC": "https://real.example/p"}
+        assert strip_topic_tags(text, link_map) == "见 [这里](https://real.example/p) 结束"
+
+    def test_tcn_in_markdown_link_unresolved_keeps_anchor_text(self):
+        # Unresolvable href inside a Markdown link → keep just the anchor text.
+        text = "见 [这里](http://t.cn/ABC) 结束"
+        assert strip_topic_tags(text) == "见 这里 结束"
+
     def test_keeps_tcn_in_code(self):
         assert strip_topic_tags("代码 `http://t.cn/xyz` 结束") == "代码 `http://t.cn/xyz` 结束"
 

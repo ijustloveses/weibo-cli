@@ -77,20 +77,36 @@ def strip_topic_tags(text: str, link_map: dict[str, str] | None = None) -> str:
     # Drop topic tags from the non-code text.
     protected = _TOPIC_TAG_RE.sub("", protected)
 
-    # Resolve t.cn links to their long URL when known; drop them otherwise.
+    # Resolve t.cn links from the url_struct mapping (short_url → display).
     link_map = link_map or {}
 
-    def _resolve_tcn(match: re.Match) -> str:
-        short = match.group(0)
+    def _display_for(short: str) -> str | None:
         # url_struct may key on either http or https form; try both.
         return (
             link_map.get(short)
             or link_map.get(short.replace("https://", "http://"))
             or link_map.get(short.replace("http://", "https://"))
-            or ""
         )
 
-    protected = _TCN_RE.sub(_resolve_tcn, protected)
+    # Case 1: the t.cn link is already the href of an existing Markdown link the
+    # author wrote — `[微博](http://t.cn/xxx)`. Keep their anchor text; swap only
+    # the URL for the resolved long URL. Wrapping in another [title](...) here
+    # would produce a broken nested link.
+    def _resolve_md_href(match: re.Match) -> str:
+        anchor, short = match.group(1), match.group(2)
+        display = _display_for(short)
+        long_url = _link_url(display) if display else ""
+        return f"[{anchor}]({long_url})" if long_url else anchor
+
+    protected = re.sub(r"\[([^\]]*)\]\((https?://t\.cn/[A-Za-z0-9]+)\)",
+                       _resolve_md_href, protected)
+
+    # Case 2: a bare t.cn link. Replace with its display (Markdown link when
+    # titled, else the bare URL); drop it if unresolved.
+    def _resolve_bare_tcn(match: re.Match) -> str:
+        return _display_for(match.group(0)) or ""
+
+    protected = _TCN_RE.sub(_resolve_bare_tcn, protected)
 
     # Restore code spans.
     def _restore(match: re.Match) -> str:
