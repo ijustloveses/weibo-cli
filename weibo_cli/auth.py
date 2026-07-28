@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -284,14 +285,47 @@ def _display_qr_in_terminal(data: str) -> bool:
 # ── QR Login flow ───────────────────────────────────────────────────
 
 
-def qr_login() -> Credential:
+def _download_qr_image(image_url: str, dest: "str | Path") -> Path | None:
+    """Download Weibo's official QR PNG (the one the app scans reliably).
+
+    The terminal-rendered QR can be unreadable in some consoles; saving the
+    official PNG lets the user open and scan the real image instead. Returns
+    the saved path, or None if the download failed (never raises — the terminal
+    QR is still shown as a fallback).
+    """
+    if image_url.startswith("//"):
+        image_url = "https:" + image_url
+    try:
+        resp = httpx.get(
+            image_url,
+            headers={"User-Agent": PASSPORT_HEADERS["User-Agent"]},
+            timeout=httpx.Timeout(30),
+            follow_redirects=True,
+        )
+        resp.raise_for_status()
+        path = Path(dest).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(resp.content)
+        return path
+    except Exception as e:  # noqa: BLE001 - best-effort, terminal QR still works
+        logger.warning("Failed to download QR image: %s", e)
+        return None
+
+
+def qr_login(save_image_path: "str | Path | None" = None) -> Credential:
     """Full QR code login flow for Weibo.
 
     1. Visit passport.weibo.com/sso/signin to get X-CSRF-TOKEN cookie
     2. GET /sso/v2/qrcode/image → qrid + image URL
     3. Extract scan URL from image URL, render QR in terminal
+       (and, if save_image_path is given, also download the official PNG)
     4. Poll /sso/v2/qrcode/check every 2s
     5. On success, follow crossdomain URL for session cookies
+
+    Args:
+        save_image_path: if set, download Weibo's official QR PNG to this path
+            in addition to rendering the QR in the terminal. Useful when the
+            terminal QR is not scannable.
     """
     with httpx.Client(
         base_url=PASSPORT_URL,
@@ -342,6 +376,11 @@ def qr_login() -> Credential:
         print("\n📱 请使用 微博APP 扫描以下二维码登录:\n")
         print("   打开微博手机APP → 我的页面 → 扫一扫\n")
         _display_qr_in_terminal(scan_url)
+        if save_image_path:
+            saved = _download_qr_image(image_url, save_image_path)
+            if saved:
+                print(f"\n🖼️  官方二维码图片已保存: {saved}")
+                print("   (若终端二维码扫不出，可打开此图片扫描)")
         print(f"\n⏳ 等待扫码中... (超时: {POLL_TIMEOUT_S // 60} 分钟)")
         print(f"   (QR ID: {qrid[:20]}...)\n")
 

@@ -265,3 +265,53 @@ class TestQRRendering:
         result = _render_qr_half_blocks(matrix)
         # Should produce spaces (with quiet zone)
         assert isinstance(result, str)
+
+
+# ── QR image download ────────────────────────────────────────────────
+
+
+class TestDownloadQrImage:
+    def test_saves_png_bytes(self, tmp_path, monkeypatch):
+        import httpx
+
+        from weibo_cli.auth import _download_qr_image
+
+        resp = MagicMock()
+        resp.content = b"\x89PNG\r\n\x1a\nFAKE"
+        resp.raise_for_status.return_value = None
+        monkeypatch.setattr(httpx, "get", lambda *a, **k: resp)
+
+        dest = tmp_path / "qr.png"
+        result = _download_qr_image("https://qr.example/img.png", dest)
+        assert result == dest
+        assert dest.read_bytes() == b"\x89PNG\r\n\x1a\nFAKE"
+
+    def test_prefixes_scheme_relative_url(self, tmp_path, monkeypatch):
+        import httpx
+
+        from weibo_cli.auth import _download_qr_image
+
+        seen = {}
+
+        def fake_get(url, *a, **k):
+            seen["url"] = url
+            resp = MagicMock()
+            resp.content = b"x"
+            resp.raise_for_status.return_value = None
+            return resp
+
+        monkeypatch.setattr(httpx, "get", fake_get)
+        _download_qr_image("//qr.example/img.png", tmp_path / "qr.png")
+        assert seen["url"].startswith("https://")
+
+    def test_returns_none_on_failure(self, tmp_path, monkeypatch):
+        import httpx
+
+        from weibo_cli.auth import _download_qr_image
+
+        def boom(*a, **k):
+            raise httpx.ConnectError("no network")
+
+        monkeypatch.setattr(httpx, "get", boom)
+        # Best-effort: swallow the error and return None (terminal QR still shown).
+        assert _download_qr_image("https://qr.example/img.png", tmp_path / "qr.png") is None

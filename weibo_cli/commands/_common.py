@@ -44,15 +44,20 @@ _ZERO_WIDTH_RE = re.compile(r"[​‌‍⁠﻿]")
 _TCN_RE = re.compile(r"https?://t\.cn/[A-Za-z0-9]+")
 
 
-def strip_topic_tags(text: str) -> str:
-    """Remove Weibo #topic# tags, t.cn short links, and zero-width chars from
-    *text* while preserving Markdown.
+def strip_topic_tags(text: str, link_map: dict[str, str] | None = None) -> str:
+    """Remove Weibo #topic# tags and zero-width chars from *text*, and either
+    resolve or drop t.cn short links, while preserving Markdown.
 
-    Weibo topics are paired-hash spans (``#话题#``). We delete those and t.cn
-    links, but never touch text inside fenced code blocks (```` ``` ````) or
-    inline code (`` ` ``), so `#include`, `# comment`, `color: #fff` etc.
-    survive. Markdown headings are safe regardless, since a leading `# ` has no
-    closing hash.
+    Weibo topics are paired-hash spans (``#话题#``). We delete those; we never
+    touch text inside fenced code blocks (```` ``` ````) or inline code
+    (`` ` ``), so `#include`, `# comment`, `color: #fff` etc. survive. Markdown
+    headings are safe regardless, since a leading `# ` has no closing hash.
+
+    t.cn short links carry no meaning on their own. When *link_map* (a
+    short_url → display mapping, from the weibo's url_struct) resolves a link,
+    we replace it inline with that display — a Markdown link ``[title](url)``
+    when the link has a title, else the bare URL — so its surrounding context
+    (e.g. "网址在此：<url>") is preserved. Unresolved short links are dropped.
     """
     if not text:
         return text
@@ -69,9 +74,23 @@ def strip_topic_tags(text: str) -> str:
 
     protected = _CODE_SPAN_RE.sub(_stash, text)
 
-    # Drop topic tags and t.cn short links from the non-code text.
+    # Drop topic tags from the non-code text.
     protected = _TOPIC_TAG_RE.sub("", protected)
-    protected = _TCN_RE.sub("", protected)
+
+    # Resolve t.cn links to their long URL when known; drop them otherwise.
+    link_map = link_map or {}
+
+    def _resolve_tcn(match: re.Match) -> str:
+        short = match.group(0)
+        # url_struct may key on either http or https form; try both.
+        return (
+            link_map.get(short)
+            or link_map.get(short.replace("https://", "http://"))
+            or link_map.get(short.replace("http://", "https://"))
+            or ""
+        )
+
+    protected = _TCN_RE.sub(_resolve_tcn, protected)
 
     # Restore code spans.
     def _restore(match: re.Match) -> str:
@@ -84,6 +103,19 @@ def strip_topic_tags(text: str) -> str:
     # Trim trailing spaces on each line and leading/trailing blank space.
     protected = "\n".join(line.rstrip() for line in protected.split("\n"))
     return protected.strip()
+
+
+def _tcn_link_map(status: dict) -> dict[str, str]:
+    """Map t.cn short_url → display string from a weibo's url_struct.
+
+    The display is a Markdown link ``[title](url)`` when titled, else the bare
+    URL. Lets the body keep inline links (resolved) instead of dropping them.
+    """
+    out: dict[str, str] = {}
+    for rec in _link_records(status):
+        if rec.get("short_url"):
+            out[rec["short_url"]] = rec["display"]
+    return out
 
 
 def full_text(status: dict) -> str:
@@ -100,7 +132,7 @@ def full_text(status: dict) -> str:
         long_content = long_text.get("longTextContent") or long_text.get("content") or ""
     short = status.get("text_raw") or status.get("text") or ""
     body = strip_html(long_content if len(long_content) > len(short) else short)
-    return strip_topic_tags(body)
+    return strip_topic_tags(body, _tcn_link_map(status))
 
 
 # ── Rich media / repost extraction ──────────────────────────────────
@@ -164,11 +196,15 @@ def _link_records(status: dict) -> list[dict]:
             if "video.weibo.com" in long_url:
                 continue
             title = u.get("url_title") or ""
+            # Prefer a Markdown link ([title](url)) when a title is available;
+            # fall back to the bare URL otherwise.
+            display = f"[{title}]({long_url})" if title else long_url
             out.append(
                 {
                     "short_url": u.get("short_url") or "",
                     "long_url": long_url,
-                    "display": f"{long_url}" + (f" ({title})" if title else ""),
+                    "title": title,
+                    "display": display,
                 }
             )
     return out
@@ -177,6 +213,18 @@ def _link_records(status: dict) -> list[dict]:
 def _expanded_links(status: dict) -> list[str]:
     """Resolve t.cn short links to their long URLs (display strings)."""
     return [rec["display"] for rec in _link_records(status)]
+
+
+_MD_LINK_RE = re.compile(r"^\[.*\]\((.*)\)$", re.DOTALL)
+
+
+def _link_url(display: str) -> str:
+    """Extract the raw URL from a link display string.
+
+    Handles both the Markdown form ``[title](url)`` and a bare ``url``.
+    """
+    m = _MD_LINK_RE.match(display)
+    return m.group(1) if m else display
 
 
 def extract_media(status: dict, *, _depth: int = 0) -> dict:
@@ -269,8 +317,16 @@ def full_text_rich(status: dict) -> str:
     """full_text() plus appended annotation lines for images, video, links,
     and quoted/reposted content — so media-only or repost weibos are legible.
     """
-    parts = [full_text(status)]
+    body = full_text(status)
+    parts = [body]
     media = extract_media(status)
+
+    # A link already resolved inline in the body (e.g. "网址在此：<url>") needn't
+    # be repeated as a separate 🔗 annotation. Drop those from the outer links.
+    outer_links = media.get("links") or []
+    kept_links = [link for link in outer_links if _link_url(link) not in body]
+    if len(kept_links) != len(outer_links):
+        media = {**media, "links": kept_links}
 
     ann = _media_lines(media)
     if ann:

@@ -149,11 +149,31 @@ class TestStripTopicTags:
     def test_removes_zero_width_in_middle(self):
         assert strip_topic_tags("a​b") == "ab"
 
-    def test_removes_tcn_link(self):
+    def test_removes_unresolvable_tcn_link(self):
+        # No link_map → the short link is meaningless noise → dropped.
         assert strip_topic_tags("看视频 http://t.cn/AX9CV0W0 结束") == "看视频 结束"
 
     def test_removes_https_tcn_link(self):
         assert strip_topic_tags("x https://t.cn/Abc123 y") == "x y"
+
+    def test_resolves_tcn_link_inline(self):
+        # With a link_map, the short link is replaced by the real URL in place,
+        # preserving surrounding context like "网址在此：<url>".
+        text = "网址在此：http://t.cn/AX91O2zl 谢谢"
+        link_map = {"http://t.cn/AX91O2zl": "https://qwenwork.cn/?x=1"}
+        assert strip_topic_tags(text, link_map) == "网址在此：https://qwenwork.cn/?x=1 谢谢"
+
+    def test_resolves_tcn_link_scheme_mismatch(self):
+        # Body uses http, url_struct keys on https (or vice versa) → still resolves.
+        text = "看 https://t.cn/ABC 完"
+        link_map = {"http://t.cn/ABC": "https://real.example/p"}
+        assert strip_topic_tags(text, link_map) == "看 https://real.example/p 完"
+
+    def test_resolves_tcn_link_to_markdown_display(self):
+        # When the map value is a Markdown link, it is inlined verbatim.
+        text = "文章：http://t.cn/AX938lL9"
+        link_map = {"http://t.cn/AX938lL9": "[标题](https://weibo.com/ttarticle/p/show?id=1)"}
+        assert strip_topic_tags(text, link_map) == "文章：[标题](https://weibo.com/ttarticle/p/show?id=1)"
 
     def test_keeps_tcn_in_code(self):
         assert strip_topic_tags("代码 `http://t.cn/xyz` 结束") == "代码 `http://t.cn/xyz` 结束"
@@ -197,9 +217,14 @@ class TestExtractMedia:
         s = {"page_info": {"object_type": "article"}}
         assert extract_media(s)["video"] is None
 
-    def test_expands_short_links(self):
+    def test_expands_short_links_as_markdown(self):
+        # Titled links render as Markdown: [title](url).
         s = {"url_struct": [{"short_url": "http://t.cn/x", "long_url": "http://real/x", "url_title": "标题"}]}
-        assert extract_media(s)["links"] == ["http://real/x (标题)"]
+        assert extract_media(s)["links"] == ["[标题](http://real/x)"]
+
+    def test_untitled_link_is_bare_url(self):
+        s = {"url_struct": [{"short_url": "http://t.cn/x", "long_url": "http://real/x"}]}
+        assert extract_media(s)["links"] == ["http://real/x"]
 
     def test_retweet_extracted_with_media(self):
         s = {
@@ -345,6 +370,29 @@ class TestFullTextRich:
         out = full_text_rich(s)
         assert "🎬 https://video.weibo.com/show?fid=1034:42" in out
 
+    def test_inline_resolved_link_not_duplicated_as_annotation(self):
+        # The link is resolved inline (as a Markdown link) in the body → it must
+        # NOT also appear as a separate 🔗 annotation line.
+        s = {
+            "text_raw": "网址在此：http://t.cn/AX91O2zl",
+            "url_struct": [{"short_url": "http://t.cn/AX91O2zl",
+                            "long_url": "https://qwenwork.cn/x", "url_title": "网页链接"}],
+        }
+        out = full_text_rich(s)
+        assert "网址在此：[网页链接](https://qwenwork.cn/x)" in out
+        assert "🔗" not in out  # not duplicated
+
+    def test_link_not_in_body_still_annotated_as_markdown(self):
+        # A url_struct link NOT present in the body text (Weibo appends it as a
+        # card) still surfaces as a 🔗 annotation, in Markdown-link form.
+        s = {
+            "text_raw": "纯文字没有短链",
+            "url_struct": [{"short_url": "http://t.cn/OTHER",
+                            "long_url": "https://example.com/card", "url_title": "标题"}],
+        }
+        out = full_text_rich(s)
+        assert "🔗 [标题](https://example.com/card)" in out
+
     def test_repost_block(self):
         s = {
             "text_raw": "引起舒适",
@@ -482,6 +530,30 @@ class TestFullText:
         # Some list responses have longText as a bool/None — must not crash.
         s = {"text_raw": "fine", "longText": True}
         assert full_text(s) == "fine"
+
+    def test_resolves_inline_tcn_from_url_struct(self):
+        # A titled t.cn link in the body is resolved via url_struct to a Markdown
+        # link inline, so both context and a readable title are preserved.
+        s = {
+            "text_raw": "网址在此：http://t.cn/AX91O2zl 谢谢",
+            "url_struct": [{"short_url": "http://t.cn/AX91O2zl",
+                            "long_url": "https://qwenwork.cn/?a=1", "url_title": "网页链接"}],
+        }
+        assert full_text(s) == "网址在此：[网页链接](https://qwenwork.cn/?a=1) 谢谢"
+
+    def test_resolves_inline_untitled_tcn_to_bare_url(self):
+        # Without a title, the inline resolution is the bare URL.
+        s = {
+            "text_raw": "网址在此：http://t.cn/AX91O2zl",
+            "url_struct": [{"short_url": "http://t.cn/AX91O2zl",
+                            "long_url": "https://qwenwork.cn/?a=1"}],
+        }
+        assert full_text(s) == "网址在此：https://qwenwork.cn/?a=1"
+
+    def test_drops_inline_tcn_when_no_url_struct(self):
+        # No url_struct → unresolvable → dropped as noise.
+        s = {"text_raw": "看 http://t.cn/AX91O2zl 完"}
+        assert full_text(s) == "看 完"
 
 
 # ── _handle_response unwrap tests ────────────────────────────────────

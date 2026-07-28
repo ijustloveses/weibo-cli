@@ -13,14 +13,20 @@ from ._common import console, handle_command, require_auth, structured_output_op
 @click.command()
 @click.option("--qrcode", is_flag=True, help="直接使用二维码扫码登录（跳过浏览器 Cookie 提取）")
 @click.option("--cookie-source", type=str, default=None, help="指定浏览器 (chrome/firefox/edge/brave/arc/...)")
-def login(qrcode, cookie_source):
+@click.option(
+    "--save-qr",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    help="将官方二维码图片保存到指定路径（终端二维码扫不出时用图片扫，仅 --qrcode 模式生效）",
+)
+def login(qrcode, cookie_source, save_qr):
     """登录微博（自动提取浏览器 Cookie 或 --qrcode 扫码）"""
     from ..auth import extract_browser_credential, get_credential, qr_login
 
     if qrcode:
         # Skip browser cookies, go straight to QR login
         try:
-            cred = qr_login()
+            cred = qr_login(save_image_path=save_qr)
             if cred:
                 console.print("[green]✅ 登录成功！[/green]")
             else:

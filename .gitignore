@@ -3,3 +3,8 @@
 __pycache__/
 dist/
 uv.lock
+
+# Login artifacts (never commit)
+qr_login.png
+*.qr.png
+credential.json
