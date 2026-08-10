@@ -52,6 +52,11 @@ def collect_since(client, uid, *, since_id=None, cutoff=None, max_pages=_MAX_SIN
     """
     collected: list[dict] = []
     seen_ids: set[str] = set()
+    # Pinned weibos sit at the top of the timeline out of chronological order,
+    # so we can't decide whether they belong just from their list position.
+    # Defer them and resolve against the cursor's own timestamp at the end.
+    deferred_pins: list[dict] = []
+    cursor_ts: datetime | None = None
     for page in range(1, max_pages + 1):
         data = client.get_user_weibos(uid, page=page, count=20)
         statuses = _extract_statuses(data)
@@ -68,17 +73,22 @@ def collect_since(client, uid, *, since_id=None, cutoff=None, max_pages=_MAX_SIN
             if since_id and _weibo_id(s) == str(since_id):
                 if is_pinned:
                     continue
+                cursor_ts = parse_weibo_time(s.get("created_at", ""))
                 reached_end = True
                 break
 
+            # A pinned weibo's list position is meaningless. Defer the decision:
+            # in cursor mode compare its date to the cursor's; in time mode to
+            # the cutoff. Never let it trigger the newest-first stop.
+            if is_pinned:
+                deferred_pins.append(s)
+                continue
+
             # Time mode: statuses are newest-first, so once one is older than
-            # the cutoff everything after it is older too — EXCEPT a pinned
-            # weibo, whose old date says nothing about the posts below it.
+            # the cutoff everything after it is older too.
             if cutoff is not None:
                 ts = parse_weibo_time(s.get("created_at", ""))
                 if ts is not None and ts < cutoff:
-                    if is_pinned:
-                        continue  # skip stale pin, keep scanning real posts
                     reached_end = True
                     break
 
@@ -91,6 +101,26 @@ def collect_since(client, uid, *, since_id=None, cutoff=None, max_pages=_MAX_SIN
 
         if reached_end or len(statuses) < 20:
             break
+
+    # Resolve deferred pins: include one only if it is genuinely recent enough.
+    # Cursor mode → newer than the cursor weibo; time mode → not older than the
+    # cutoff. If the cursor was never located we can't prove the pin is newer,
+    # so we drop it (avoids re-collecting a stale pin every incremental run).
+    for s in deferred_pins:
+        wid = _weibo_id(s)
+        if wid and wid in seen_ids:
+            continue
+        ts = parse_weibo_time(s.get("created_at", ""))
+        if since_id is not None:
+            keep = cursor_ts is not None and ts is not None and ts > cursor_ts
+        elif cutoff is not None:
+            keep = ts is not None and ts >= cutoff
+        else:
+            keep = True  # no stop condition → keep everything
+        if keep:
+            if wid:
+                seen_ids.add(wid)
+            collected.append(s)
 
     # Optionally enrich long weibos with their full body via the detail API.
     # This covers both the outer weibo AND a long reposted source weibo, whose

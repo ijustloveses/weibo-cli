@@ -175,8 +175,39 @@ class TestSincePinned:
         result, _ = _run_since(monkeypatch, [page1], ["--since", "CURSOR"])
         assert result.exit_code == 0
         assert '"new1"' in result.output       # newer than cursor → kept
+        assert '"PIN"' not in result.output     # stale pin older than cursor → dropped
         assert '"CURSOR"' not in result.output  # cursor itself excluded
         assert '"older"' not in result.output   # below cursor → not reached
+        assert '"count": 1' in result.output
+
+    def test_stale_pin_not_recollected_in_cursor_mode(self, monkeypatch, patched_auth):
+        # The archive-incremental bug: a stale pin (far older than the cursor)
+        # must NOT be re-collected every incremental run.
+        page1 = [
+            _status("PIN", hours_ago=9000, pinned=True),  # ~1yr old
+            _status("new1", hours_ago=1),
+            _status("new2", hours_ago=3),
+            _status("CURSOR", hours_ago=10),
+        ]
+        result, _ = _run_since(monkeypatch, [page1], ["--since", "CURSOR"])
+        assert result.exit_code == 0
+        assert '"new1"' in result.output
+        assert '"new2"' in result.output
+        assert '"PIN"' not in result.output    # dropped: older than cursor
+        assert '"count": 2' in result.output
+
+    def test_recent_pin_kept_in_cursor_mode(self, monkeypatch, patched_auth):
+        # A pin newer than the cursor is genuine new content → keep it.
+        page1 = [
+            _status("PIN", hours_ago=1, pinned=True),  # newer than cursor
+            _status("new1", hours_ago=2),
+            _status("CURSOR", hours_ago=10),
+        ]
+        result, _ = _run_since(monkeypatch, [page1], ["--since", "CURSOR"])
+        assert result.exit_code == 0
+        assert '"PIN"' in result.output        # newer than cursor → kept
+        assert '"new1"' in result.output
+        assert '"count": 2' in result.output
 
     def test_pin_not_double_counted(self, monkeypatch, patched_auth):
         # A pin can appear both at the top and in its natural position; dedup.
