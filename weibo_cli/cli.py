@@ -58,6 +58,7 @@ cli.add_command(personal.reposts)
 cli.add_command(personal.home)
 cli.add_command(personal.since)
 cli.add_command(personal.archive)
+cli.add_command(personal.threads)
 
 
 if __name__ == "__main__":

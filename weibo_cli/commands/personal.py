@@ -20,7 +20,7 @@ from ._common import (
     to_markdown,
 )
 from ..client import WeiboClient
-from ..constants import DEFAULT_USERS_FILE
+from ..constants import DEFAULT_THREADS_FILE, DEFAULT_USERS_FILE
 from ..exceptions import WeiboApiError
 from .renderers import render_repost_list, render_user_table, render_weibo_list
 
@@ -378,6 +378,36 @@ def parse_user_list(text: str) -> list[tuple[str, str]]:
     return users
 
 
+# Matches a weibo URL and captures (uid, mblogid): https://weibo.com/{uid}/{mblogid}
+# Also accepts a bare 'uid/mblogid' line (anchored, no scheme/host).
+_WEIBO_URL_RE = re.compile(r"weibo\.com/(\d+)/([A-Za-z0-9]+)")
+_BARE_ID_RE = re.compile(r"^(\d+)/([A-Za-z0-9]+)$")
+
+
+def parse_thread_list(text: str) -> list[tuple[str, str]]:
+    """Parse a threads file into [(uid, mblogid), ...].
+
+    Each non-empty, non-comment line is a weibo URL like
+    'https://weibo.com/{uid}/{mblogid}' (a bare 'uid/mblogid' also works).
+    Lines starting with '#' are comments; duplicates are dropped (first wins).
+    """
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = _WEIBO_URL_RE.search(line) or _BARE_ID_RE.match(line)
+        if not m:
+            continue
+        pair = (m.group(1), m.group(2))
+        if pair in seen:
+            continue
+        seen.add(pair)
+        out.append(pair)
+    return out
+
+
 def _latest_archived_mblogid(user_dir: Path) -> str | None:
     """The mblogid of the newest already-archived weibo in *user_dir*, by the
     YYYYmmdd_HHMMSS prefix in the filename. None if the dir has no archive files.
@@ -497,3 +527,104 @@ def archive(users_file, days, max_pages, no_full, delay, out_dir):
         return
 
     console.print(f"[green]完成：共 {total_new} 条新微博，{len(users)} 个用户[/green]")
+
+
+# ── Threads (fetch specific weibos by URL into per-author Markdown) ──
+
+
+def _enrich_detail(client, status: dict) -> None:
+    """Fill in the full body of a weibo and its reposted source (if long)."""
+    _enrich_long_text(client, status)
+    rt = status.get("retweeted_status")
+    if isinstance(rt, dict):
+        _enrich_long_text(client, rt)
+
+
+@click.command()
+@click.argument("threads_file", required=False, type=click.Path(dir_okay=False))
+@click.option("--no-full", is_flag=True, help="不补拉长微博全文（默认补拉）")
+@click.option("--delay", default=2.5, show_default=True, help="请求最小间隔秒数（越大越安全越慢）")
+@click.option("--out", "out_dir", default="threads", help="输出根目录 (默认 ./threads)")
+def threads(threads_file, no_full, delay, out_dir):
+    """按 URL 列表抓取指定微博，每条存成 Markdown（按作者分目录）
+
+    \b
+    列表文件：每行一条微博 URL（# 开头为注释），例如：
+        https://weibo.com/1233486457/RfrszzFA4
+        https://weibo.com/3894431038/Rg3OeeN99
+
+    \b
+    不指定文件时，默认读取 ~/.config/weibo-cli/threads.txt
+
+    \b
+    输出结构：
+        threads/{uid}_{作者名}/{YYYYmmdd}_{HHMMSS}_{mblogid}.md
+
+    已存在的文件会跳过（可安全重复运行）。默认补拉长微博及转发源微博全文。
+    """
+    cred = require_auth()
+    fetch_full = not no_full
+
+    threads_path = Path(threads_file) if threads_file else DEFAULT_THREADS_FILE
+    if not threads_path.is_file():
+        if threads_file:
+            console.print(f"[red]❌ 找不到列表文件：{threads_path}[/red]")
+        else:
+            console.print(f"[yellow]未指定列表文件，且默认文件不存在：{threads_path}[/yellow]")
+            console.print("  提示：在该路径创建 threads.txt（每行一条微博 URL），或用 weibo threads <文件> 指定")
+        return
+
+    items = parse_thread_list(threads_path.read_text(encoding="utf-8"))
+    if not items:
+        console.print("[yellow]列表为空（没有解析到有效的微博 URL）[/yellow]")
+        return
+
+    root = Path(out_dir)
+    root.mkdir(parents=True, exist_ok=True)
+
+    written = skipped = failed = 0
+    try:
+        with WeiboClient(cred, request_delay=delay) as client:
+            for uid, mblogid in items:
+                try:
+                    status = client.get_weibo_detail(mblogid)
+                except WeiboApiError as exc:
+                    console.print(f"  [red]✗ {mblogid} 抓取失败：{exc}[/red]")
+                    failed += 1
+                    continue
+
+                if fetch_full:
+                    _enrich_detail(client, status)
+                status["media"] = extract_media(status)
+
+                user = status.get("user") or {}
+                author = user.get("screen_name") or ""
+                # Prefer the uid from the detail response; fall back to the URL's.
+                author_uid = str(user.get("idstr") or user.get("id") or uid)
+                dir_name = f"{_sanitize(author_uid)}_{_sanitize(author or author_uid)}"
+                user_dir = root / dir_name
+                user_dir.mkdir(parents=True, exist_ok=True)
+
+                fname = _archive_filename(status)
+                if not fname:
+                    console.print(f"  [yellow]⚠ {mblogid} 缺少时间/ID，跳过[/yellow]")
+                    failed += 1
+                    continue
+
+                target = user_dir / fname
+                if target.exists():
+                    skipped += 1
+                    continue
+
+                target.write_text(to_markdown(status), encoding="utf-8")
+                written += 1
+                console.print(f"  [green]+[/green] @{author or author_uid} → {target.name}")
+
+    except WeiboApiError as exc:
+        console.print(f"[red]❌ {exc}[/red]")
+        return
+
+    console.print(
+        f"[green]完成：新写入 {written} 条，跳过 {skipped} 条，失败 {failed} 条"
+        f"（共 {len(items)} 条）[/green]"
+    )

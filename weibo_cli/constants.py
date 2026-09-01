@@ -7,6 +7,8 @@ CONFIG_DIR = Path.home() / ".config" / "weibo-cli"
 CREDENTIAL_FILE = CONFIG_DIR / "credential.json"
 # Default users list for `weibo archive` when no file argument is given.
 DEFAULT_USERS_FILE = CONFIG_DIR / "users.txt"
+# Default weibo-URL list for `weibo threads` when no file argument is given.
+DEFAULT_THREADS_FILE = CONFIG_DIR / "threads.txt"
 
 # ── Base URLs ───────────────────────────────────────────────────────
 BASE_URL = "https://weibo.com"

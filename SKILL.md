@@ -103,6 +103,7 @@ Non-TTY stdout defaults to YAML automatically. `--md` (weibo-content commands li
 | `weibo since <uid>` | Incremental: weibos newer than a cursor, or from the last N days. `--full` fetches long-text; `--md` outputs Markdown | `weibo since 1699432410 --since Qw06Kd98p --full --json` |
 | `weibo download <mblogid>` | Download all images of a weibo (incl. reposted original) with Referer bypass | `weibo download Qw06Kd98p -o ./imgs` |
 | `weibo archive [users_file]` | Batch incremental export to Markdown files. Defaults to `~/.config/weibo-cli/users.txt` | `weibo archive users.txt --days 3` |
+| `weibo threads [threads_file]` | Fetch a fixed list of weibo URLs to per-author Markdown files. Defaults to `~/.config/weibo-cli/threads.txt` | `weibo threads threads.txt --out ./saved` |
 | `weibo following <uid>` | User's following list | `weibo following 1699432410` |
 | `weibo followers <uid>` | User's follower list | `weibo followers 1699432410` |
 
@@ -164,6 +165,18 @@ weibo archive                    # re-run later: incremental, resumes from newes
 ```
 
 Writes one Markdown file per weibo at `weibos/{uid}_{name}/{YYYYmmdd}_{HHMMSS}_{mblogid}.md` (frontmatter + full body, `--full` on by default). `weibos/` is relative to the current directory (or `--out DIR`). Idempotent: re-running only writes weibos newer than the latest already-archived file, so it is safe to schedule.
+
+### Fetch a fixed list of specific weibos (by URL)
+
+```bash
+# URL list: ~/.config/weibo-cli/threads.txt, one weibo URL per line (# comments ok)
+#   https://weibo.com/1233486457/RfrszzFA4
+#   https://weibo.com/3894431038/Rg3OeeN99
+weibo threads                    # read the default list, save under ./threads/
+weibo threads saved.txt --out D:\saved
+```
+
+Writes one Markdown file per weibo at `threads/{uid}_{author}/{YYYYmmdd}_{HHMMSS}_{mblogid}.md`, grouped by the author name resolved from each weibo (frontmatter + full body; long-text and reposted-source full text fetched by default, `--no-full` to skip). Duplicates in the list are dropped; already-existing files are skipped, so re-runs are safe. Unlike `archive` (which tracks *users* and their newest posts), `threads` fetches an explicit, fixed set of individual weibos.
 
 ### Daily monitoring workflow
 

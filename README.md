@@ -155,6 +155,12 @@ weibo archive --days 3                 # First run grabs the last 3 days
 weibo archive --delay 4                # Slower pacing (4s min between requests)
 weibo archive --no-full                # Skip long-text enrichment (faster)
 weibo archive --out D:\backup          # Custom output root
+
+# ─── Threads (fetch specific weibos by URL) ─────
+weibo threads                          # Read ~/.config/weibo-cli/threads.txt, save to ./threads/
+weibo threads threads.txt              # Use a specific URL list
+weibo threads --no-full                # Skip long-text enrichment (faster)
+weibo threads --out D:\saved           # Custom output root
 ```
 
 > **Long text:** the list API returns only a ~180-char preview for long weibos. Use `--full` to auto-fetch each long weibo's complete body via the detail API (one extra request per long weibo).
@@ -164,6 +170,8 @@ weibo archive --out D:\backup          # Custom output root
 > **`--md` output:** each weibo becomes Markdown with a YAML frontmatter header (`mblogid`, `url`, `created_at` as `YYYY-mm-dd HH:MM:SS`, `is_long_text`, counts) followed by the body.
 >
 > **`archive`** exports each user's new weibos as one Markdown file per weibo under `weibos/{uid}_{name}/{YYYYmmdd}_{HHMMSS}_{mblogid}.md`. The user list defaults to `~/.config/weibo-cli/users.txt` — one `uid,name` per line (`#` comments allowed). First run per user grabs `--days` days; later runs are incremental, using the newest already-archived file as the cursor. `weibos/` is created relative to the current directory (or `--out`).
+>
+> **`threads`** fetches a fixed list of specific weibos by URL and saves each as one Markdown file under `threads/{uid}_{author}/{YYYYmmdd}_{HHMMSS}_{mblogid}.md` (grouped by author name, resolved from each weibo). The URL list defaults to `~/.config/weibo-cli/threads.txt` — one `https://weibo.com/{uid}/{mblogid}` per line (`#` comments allowed; duplicates dropped). Long text and reposted-source full text are fetched by default (`--no-full` to skip); already-existing files are skipped, so re-runs are safe.
 
 ### Authentication
 
@@ -367,6 +375,12 @@ weibo archive --days 3                 # 首次抓最近 3 天
 weibo archive --delay 4                # 更慢更安全（请求最小间隔 4 秒）
 weibo archive --no-full                # 不补长文（更快）
 weibo archive --out D:\备份            # 自定义输出根目录
+
+# 按 URL 抓取指定微博
+weibo threads                          # 读 ~/.config/weibo-cli/threads.txt，存到 ./threads/
+weibo threads threads.txt              # 指定 URL 列表文件
+weibo threads --no-full                # 不补长文（更快）
+weibo threads --out D:\收藏            # 自定义输出根目录
 ```
 
 > **长文**：列表接口对长微博只返回约 180 字摘要。加 `--full` 会对每条长微博通过详情接口补拉完整正文（每条长微博多一次请求）。
@@ -376,6 +390,8 @@ weibo archive --out D:\备份            # 自定义输出根目录
 > **`--md` 输出**：每条微博输出为带 YAML frontmatter 抬头的 Markdown（`mblogid`、`url`、`created_at`（`YYYY-mm-dd HH:MM:SS`）、`is_long_text`、各计数）+ 正文。
 >
 > **`archive`（批量归档）**：把每个用户的新微博按 `weibos/{uid}_{name}/{YYYYmmdd}_{HHMMSS}_{mblogid}.md` 存成一条一个文件。用户列表默认读 `~/.config/weibo-cli/users.txt`，每行 `uid,用户名`（`#` 开头为注释）。每个用户首次抓 `--days` 天，之后增量——以已归档文件名时间最大者作游标。`weibos/` 相对当前目录创建（或用 `--out` 指定）。
+>
+> **`threads`（按 URL 抓取指定微博）**：把一份固定的微博 URL 列表逐条抓取，每条按 `threads/{uid}_{作者名}/{YYYYmmdd}_{HHMMSS}_{mblogid}.md` 存成一个文件（按作者名分目录，作者名从每条微博解析）。URL 列表默认读 `~/.config/weibo-cli/threads.txt`，每行一条 `https://weibo.com/{uid}/{mblogid}`（`#` 开头为注释，重复自动去重）。默认补拉长微博及转发源微博全文（`--no-full` 关闭）；已存在的文件会跳过，可安全重复运行。
 
 ### 常见问题
 
