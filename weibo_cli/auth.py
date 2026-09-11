@@ -60,10 +60,17 @@ POLL_TIMEOUT_S = 240  # 4 minutes
 
 
 class Credential:
-    """Holds Weibo session cookies."""
+    """Holds Weibo session cookies.
 
-    def __init__(self, cookies: dict[str, str]):
+    ``persistable`` marks a credential that is backed by the on-disk credential
+    file (loaded from it, or produced by login/browser extraction). Only these
+    are written back when the client refreshes cookies mid-session — ad-hoc
+    credentials built in tests or one-off code are never persisted.
+    """
+
+    def __init__(self, cookies: dict[str, str], persistable: bool = False):
         self.cookies = cookies
+        self.persistable = persistable
 
     @property
     def is_valid(self) -> bool:
@@ -100,6 +107,7 @@ def load_credential() -> Credential | None:
         cred = Credential.from_dict(data)
         if not cred.is_valid:
             return None
+        cred.persistable = True  # backed by the on-disk file → refreshes are saved
 
         # Check TTL — auto-refresh if stale
         saved_at = data.get("saved_at", 0)
@@ -108,6 +116,7 @@ def load_credential() -> Credential | None:
             fresh = extract_browser_credential()
             if fresh:
                 logger.info("Auto-refreshed credential from browser")
+                fresh.persistable = True
                 return fresh
             logger.warning("Cookie refresh failed; using existing cookies (age: %d+ days)", CREDENTIAL_TTL_DAYS)
         return cred
