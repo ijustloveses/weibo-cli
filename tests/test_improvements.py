@@ -463,7 +463,7 @@ class TestToMarkdown:
     def _sample(self):
         return {
             "mblogid": "R9EM6ApWL",
-            "user": {"idstr": "5648162302", "screen_name": "x"},
+            "user": {"idstr": "5648162302", "screen_name": "高飞"},
             "created_at": "Tue Jul 21 07:20:00 +0800 2026",
             "isLongText": True,
             "comments_count": 8,
@@ -480,9 +480,26 @@ class TestToMarkdown:
     def test_frontmatter_fields(self):
         md = to_markdown(self._sample())
         assert "mblogid: R9EM6ApWL" in md
+        assert 'author: "高飞"' in md
         assert "url: https://weibo.com/5648162302/R9EM6ApWL" in md
         assert "created_at: 2026-07-21 07:20:00" in md
         assert "is_long_text: true" in md
+
+    def test_author_quoted_and_escaped(self):
+        # Screen names with YAML-special chars must stay valid (quoted/escaped).
+        s = self._sample()
+        s["user"] = {"idstr": "1", "screen_name": '奇怪: 名字 "带引号"'}
+        md = to_markdown(s)
+        assert 'author: "奇怪: 名字 \\"带引号\\""' in md
+        # And the whole frontmatter round-trips through a YAML parser.
+        import yaml
+        fm = md.split("---\n")[1]
+        assert yaml.safe_load(fm)["author"] == '奇怪: 名字 "带引号"'
+
+    def test_author_empty_when_no_user(self):
+        s = self._sample()
+        s["user"] = {}
+        assert 'author: ""' in to_markdown(s)
 
     def test_frontmatter_omits_volatile_counts(self):
         # Engagement counts change over time → not persisted in frontmatter.

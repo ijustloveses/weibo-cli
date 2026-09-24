@@ -368,6 +368,16 @@ def full_text_rich(status: dict) -> str:
     return "\n\n".join(p for p in parts if p.strip())
 
 
+def _yaml_str(value: str) -> str:
+    """Format a string as a safe double-quoted YAML scalar.
+
+    Screen names can contain colons, '#', quotes, emoji, etc., which would break
+    an unquoted YAML value, so always quote (escaping '\\' and '"').
+    """
+    escaped = (value or "").replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def to_markdown(status: dict) -> str:
     """Render a weibo as Markdown with a YAML frontmatter header.
 
@@ -377,12 +387,14 @@ def to_markdown(status: dict) -> str:
     """
     user = status.get("user") or {}
     uid = user.get("idstr") or user.get("id") or ""
+    author = user.get("screen_name") or ""
     mblogid = status.get("mblogid") or status.get("bid") or ""
     url = f"https://weibo.com/{uid}/{mblogid}" if uid and mblogid else ""
 
     header = [
         "---",
         f"mblogid: {mblogid}",
+        f"author: {_yaml_str(author)}",
         f"url: {url}",
         f"created_at: {format_weibo_time(status.get('created_at', ''))}",
         f"is_long_text: {str(bool(status.get('isLongText'))).lower()}",
