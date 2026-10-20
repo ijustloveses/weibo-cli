@@ -307,11 +307,14 @@ class TestCookiePersistOnExit:
 
         client = WeiboClient(cred, request_delay=0)
         with client:
+            client._request_count = 1  # a real request happened
             client.client.cookies.set("SUB", "new_rolled")  # server rolled it
         assert saved.get("SUB") == "new_rolled"
         assert saved.get("SUBP") == "p"  # untouched cookie retained
 
-    def test_no_save_when_unchanged(self, monkeypatch):
+    def test_keepalive_saves_even_when_unchanged(self, monkeypatch):
+        # Keep-alive: a session that made requests re-saves (to bump saved_at)
+        # even if no cookie changed, so regular use never goes stale.
         cred = self._persistable_cred()
         calls = {"n": 0}
         monkeypatch.setattr("weibo_cli.auth.save_credential",
@@ -319,7 +322,19 @@ class TestCookiePersistOnExit:
 
         client = WeiboClient(cred, request_delay=0)
         with client:
-            pass  # no cookie change
+            client._request_count = 3  # requests happened, cookies unchanged
+        assert calls["n"] == 1
+
+    def test_no_save_when_no_requests(self, monkeypatch):
+        # A no-op session (zero requests) tells us nothing → don't touch disk.
+        cred = self._persistable_cred()
+        calls = {"n": 0}
+        monkeypatch.setattr("weibo_cli.auth.save_credential",
+                            lambda c: calls.__setitem__("n", calls["n"] + 1))
+
+        client = WeiboClient(cred, request_delay=0)
+        with client:
+            pass  # _request_count stays 0
         assert calls["n"] == 0
 
     def test_non_persistable_never_saved(self, monkeypatch):
@@ -332,6 +347,7 @@ class TestCookiePersistOnExit:
 
         client = WeiboClient(cred, request_delay=0)
         with client:
+            client._request_count = 1
             client.client.cookies.set("SUB", "new")
         assert calls["n"] == 0
 
@@ -343,7 +359,24 @@ class TestCookiePersistOnExit:
 
         client = WeiboClient(cred, request_delay=0, persist_on_exit=False)
         with client:
+            client._request_count = 1
             client.client.cookies.set("SUB", "new")
+        assert calls["n"] == 0
+
+    def test_dropped_sub_not_persisted(self, monkeypatch):
+        # Guard: if both the jar and the credential lose the primary auth
+        # cookie, don't persist (would wipe a good credential).
+        cred = self._persistable_cred()
+        calls = {"n": 0}
+        monkeypatch.setattr("weibo_cli.auth.save_credential",
+                            lambda c: calls.__setitem__("n", calls["n"] + 1))
+
+        client = WeiboClient(cred, request_delay=0)
+        with client:
+            client._request_count = 1
+            client.credential.cookies = {"SUBP": "p"}        # SUB gone from cred
+            client.client.cookies.clear()                    # and from the jar
+            client.client.cookies.set("SUBP", "p")
         assert calls["n"] == 0
 
     def test_save_failure_is_non_fatal(self, monkeypatch):
@@ -356,4 +389,5 @@ class TestCookiePersistOnExit:
         client = WeiboClient(cred, request_delay=0)
         # Must not raise out of the context manager.
         with client:
+            client._request_count = 1
             client.client.cookies.set("SUB", "new")

@@ -98,21 +98,29 @@ class WeiboClient:
             self._http = None
 
     def _persist_refreshed_cookies(self) -> None:
-        """Write refreshed session cookies back to disk so the saved credential
-        stays alive across runs.
+        """Keep the saved credential alive by writing it back after use.
 
-        Weibo returns updated cookies (e.g. a rolled SUB) on normal requests;
-        _merge_response_cookies folds them into the live jar. Without saving them
-        back, every process restart falls back to the original login cookies,
-        which eventually expire — forcing a re-login. We only save when there is
-        a credential, cookies actually changed, and we still hold the meaningful
-        auth cookie. Any failure here is non-fatal (the request work is done).
+        Two things keep a login alive across runs:
+        1. **Rolled cookies** — Weibo returns updated cookies (e.g. a fresh SUB)
+           on some requests; _merge_response_cookies folds them into the live jar
+           and we persist them so restarts don't fall back to login-time cookies.
+        2. **Keep-alive timestamp** — save_credential refreshes `saved_at`, which
+           the loader uses for TTL. So whenever the session actually made a
+           request, we re-save even if no cookie changed: every use resets the
+           staleness clock, and a credential used regularly won't go stale on its
+           own. (We skip no-op sessions that made zero requests.)
+
+        Only persistable (on-disk-backed) credentials are written. Any failure
+        here is non-fatal — the request work is already done.
         """
         if not (self._persist_on_exit and self.credential and self._http):
             return
         # Only persist credentials that are backed by the on-disk file, so
         # ad-hoc/test credentials never overwrite it.
         if not getattr(self.credential, "persistable", False):
+            return
+        # A session that made no requests tells us nothing — don't touch disk.
+        if self._request_count == 0:
             return
         try:
             # Iterate the raw cookiejar (not httpx's Cookies mapping, which
@@ -125,8 +133,6 @@ class WeiboClient:
             # Merge onto the credential's cookies rather than replacing, so we
             # never drop cookies the response simply didn't resend.
             merged = {**self.credential.cookies, **live}
-            if merged == self._initial_cookies:
-                return  # nothing changed → no write
             # Guard against wiping a good credential if the jar somehow lost the
             # primary auth cookie.
             if "SUB" in self._initial_cookies and "SUB" not in merged:
@@ -134,7 +140,10 @@ class WeiboClient:
             self.credential.cookies = merged
             from .auth import save_credential
             save_credential(self.credential)
-            logger.info("Persisted %d refreshed session cookies", len(merged))
+            if merged != self._initial_cookies:
+                logger.info("Persisted %d refreshed session cookies", len(merged))
+            else:
+                logger.debug("Refreshed credential keep-alive timestamp")
         except Exception as e:  # noqa: BLE001 - persistence must never break a command
             logger.warning("Failed to persist refreshed cookies: %s", e)
 
