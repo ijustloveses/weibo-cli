@@ -96,9 +96,11 @@ weibo detail Qw06Kd98p
 # ─── Auth ─────────────────────────────────────────
 weibo login                            # Extract cookies from browser / QR login
 weibo login --qrcode                   # QR code login directly (skip browser)
+weibo login --qrcode --save-qr qr.png  # Also save the official QR PNG (scan the image if the terminal QR won't scan)
 weibo login --cookie-source chrome     # Extract from specific browser
 weibo logout                           # Clear saved credentials
 weibo status                           # Check login status
+weibo keepalive                        # Refresh the server session to stay logged in (for scheduled tasks)
 weibo me                               # Show current user profile
 
 # ─── Hot & Trending ────────────────────────────
@@ -183,12 +185,19 @@ weibo-cli uses this auth priority:
 
 Browser extraction is recommended — it forwards ALL Weibo cookies and is closest to normal browser traffic.
 
-Cookie TTL is **7 days** by default. After expiry, the client automatically attempts browser re-extraction.
+**Staying logged in.** A Weibo login is kept alive by the **server-side session**, which expires after roughly **7 days of inactivity** — regardless of the cookies' own (much longer) nominal expiry. Every request you make refreshes the session and re-persists the credential, so if you use the tool regularly you rarely need to re-login. If you only use it occasionally, run `weibo keepalive` on a schedule (e.g. every 2–3 days) to touch the session and keep it alive:
+
+```bash
+# Windows Task Scheduler: run keepalive every 2 days at 10:00
+schtasks /Create /SC DAILY /MO 2 /TN "WeiboKeepAlive" /TR "cmd /c cd /d C:\path\to\weibo-cli && uv run weibo keepalive >> keepalive.log 2>&1" /ST 10:00
+```
+
+`weibo keepalive` exits `0` on success, `1` if the session has expired (re-login needed), `2` if not logged in — so a scheduled run leaves a clear signal in its log when it's time to scan a QR again.
 
 ### Troubleshooting
 
 - `⚠️ 未登录` — Run `weibo login` to authenticate
-- `会话已过期` — Cookie expired, run `weibo logout && weibo login`
+- `会话已过期` — Session expired (after ~7 days idle), run `weibo logout && weibo login`; schedule `weibo keepalive` to avoid it
 - `Unable to get key for cookie decryption` (macOS Keychain):
   - **SSH sessions**: `security unlock-keychain ~/Library/Keychains/login.keychain-db`
   - **Local terminal**: Open **Keychain Access** → search **"Chrome Safe Storage"** → **Access Control** → add Terminal → **Save**
@@ -234,7 +243,7 @@ weibo_cli/
 └── commands/
     ├── _common.py     # output routing, to_markdown, media/topic-tag helpers
     ├── renderers.py   # shared Markdown / table renderers
-    ├── auth.py        # login/logout/status/me
+    ├── auth.py        # login/logout/keepalive/status/me
     ├── search.py      # hot/feed/detail/download/comments/trending/search
     └── personal.py    # profile/weibos/following/followers/reposts/home/since/archive
 ```
@@ -329,9 +338,11 @@ uv sync
 # 认证
 weibo login                            # 从浏览器提取 Cookie / 二维码扫码
 weibo login --qrcode                   # 直接二维码扫码登录
+weibo login --qrcode --save-qr qr.png  # 同时保存官方二维码图片（终端二维码扫不出时扫图片）
 weibo login --cookie-source chrome     # 指定浏览器提取
 weibo logout                           # 清除已保存凭证
 weibo status                           # 检查登录状态
+weibo keepalive                        # 刷新服务端会话以保持登录（适合挂计划任务）
 weibo me                               # 查看当前用户信息
 
 # 热搜
@@ -393,10 +404,19 @@ weibo threads --out D:\收藏            # 自定义输出根目录
 >
 > **`threads`（按 URL 抓取指定微博）**：把一份固定的微博 URL 列表逐条抓取，每条按 `threads/{uid}_{作者名}/{YYYYmmdd}_{HHMMSS}_{mblogid}.md` 存成一个文件（按作者名分目录，作者名从每条微博解析）。URL 列表默认读 `~/.config/weibo-cli/threads.txt`，每行一条 `https://weibo.com/{uid}/{mblogid}`（`#` 开头为注释，重复自动去重）。默认补拉长微博及转发源微博全文（`--no-full` 关闭）；已存在的文件会跳过，可安全重复运行。
 
+> **保持登录（`keepalive`）**：微博登录态真正由**服务端 session** 维持，约 **7 天无活动**即失效——与 cookie 账面有效期（名义上长得多）无关。你每次发请求都会刷新 session 并重新落盘凭证，所以**经常使用就很少需要重登**。若只是偶尔用，把 `weibo keepalive` 挂到计划任务里每隔 2-3 天跑一次，定期"触碰"服务端 session 让它保活：
+>
+> ```bash
+> # Windows 任务计划程序：每 2 天上午 10:00 跑一次保活
+> schtasks /Create /SC DAILY /MO 2 /TN "WeiboKeepAlive" /TR "cmd /c cd /d C:\path\to\weibo-cli && uv run weibo keepalive >> keepalive.log 2>&1" /ST 10:00
+> ```
+>
+> `weibo keepalive` 成功退出码 `0`、会话已过期 `1`（需重登）、未登录 `2`——计划任务跑完会在日志里留下明确信号，告诉你何时该重新扫码。
+
 ### 常见问题
 
 - `⚠️ 未登录` — 执行 `weibo login` 认证
-- `会话已过期` — Cookie 过期，执行 `weibo logout && weibo login`
+- `会话已过期` — 服务端 session 失效（约 7 天无活动后），执行 `weibo logout && weibo login`；可挂 `weibo keepalive` 计划任务避免
 - 请求较慢是正常的 — 内置约 2.5 秒最小间隔 + 高斯随机抖动，模拟人类浏览行为、避免触发风控（`weibo archive` 可用 `--delay` 调得更慢）
 
 ### 作为 AI Agent Skill 使用

@@ -71,6 +71,45 @@ def logout():
 
 
 @click.command()
+def keepalive():
+    """保活：发一次已登录请求，刷新服务端会话并续期凭证
+
+    \b
+    微博的登录态真正由服务端 session 维持（约 7 天无活动即失效），而不是 cookie
+    的账面有效期。日常不常用时，把本命令挂到计划任务里每隔 2-3 天跑一次，即可让
+    会话保持活跃、减少重新扫码。
+
+    \b
+    成功退出码 0；未登录或会话已过期退出码非 0（便于计划任务判断是否需要重新登录）。
+    """
+    import sys
+
+    from ..auth import get_credential
+    from ..client import WeiboClient
+    from ..exceptions import WeiboApiError
+
+    cred = get_credential()
+    if not cred:
+        console.print("[yellow]⚠️  未登录[/yellow]，使用 [bold]weibo login --qrcode[/bold] 扫码登录")
+        sys.exit(2)
+
+    try:
+        with WeiboClient(cred) as client:
+            # A cheap authenticated call: touches the server session (keeping it
+            # alive) and, on __exit__, re-persists the credential (keep-alive).
+            client.get_config()
+    except WeiboApiError as exc:
+        console.print(f"[red]❌ 保活失败，会话可能已过期：{exc}[/red]")
+        console.print("  请重新登录：[bold]weibo login --qrcode[/bold]")
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001 - report any failure with nonzero exit
+        console.print(f"[red]❌ 保活请求出错：{exc}[/red]")
+        sys.exit(1)
+
+    console.print("[green]✅ 保活成功[/green]（会话已刷新，凭证已续期）")
+
+
+@click.command()
 @structured_output_options
 def status(as_json, as_yaml, as_md):
     """查看当前登录状态"""

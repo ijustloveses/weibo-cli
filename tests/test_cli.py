@@ -32,7 +32,7 @@ def test_version():
 
 
 EXPECTED_COMMANDS = [
-    "login", "logout", "status", "me",
+    "login", "logout", "keepalive", "status", "me",
     "hot", "feed", "detail", "download", "comments", "trending", "search",
     "profile", "weibos", "following", "followers", "reposts", "home", "since", "archive", "threads",
 ]
@@ -108,6 +108,7 @@ def test_all_error_codes():
     ("download", "下载"),
     ("archive", "归档"),
     ("threads", "抓取指定微博"),
+    ("keepalive", "保活"),
 ])
 def test_command_help_text(cmd, expected_text):
     """Each command has appropriate help description."""
@@ -122,3 +123,38 @@ def test_json_option_available(cmd):
     runner = CliRunner()
     result = runner.invoke(cli, [cmd, "--help"])
     assert "--json" in result.output
+
+
+# ── keepalive command ────────────────────────────────────────────────
+
+
+class TestKeepalive:
+    def test_success_exit_zero(self, monkeypatch):
+        from weibo_cli.auth import Credential
+        monkeypatch.setattr("weibo_cli.auth.get_credential",
+                            lambda: Credential(cookies={"SUB": "x"}))
+        monkeypatch.setattr("weibo_cli.client.WeiboClient.get_config",
+                            lambda self: {"ok": 1})
+        result = CliRunner().invoke(cli, ["keepalive"])
+        assert result.exit_code == 0
+        assert "保活成功" in result.output
+
+    def test_not_logged_in_exit_2(self, monkeypatch):
+        monkeypatch.setattr("weibo_cli.auth.get_credential", lambda: None)
+        result = CliRunner().invoke(cli, ["keepalive"])
+        assert result.exit_code == 2
+        assert "未登录" in result.output
+
+    def test_expired_session_exit_1(self, monkeypatch):
+        from weibo_cli.auth import Credential
+        from weibo_cli.exceptions import SessionExpiredError
+        monkeypatch.setattr("weibo_cli.auth.get_credential",
+                            lambda: Credential(cookies={"SUB": "x"}))
+
+        def boom(self):
+            raise SessionExpiredError()
+
+        monkeypatch.setattr("weibo_cli.client.WeiboClient.get_config", boom)
+        result = CliRunner().invoke(cli, ["keepalive"])
+        assert result.exit_code == 1
+        assert "重新登录" in result.output
