@@ -108,7 +108,7 @@ def test_all_error_codes():
     ("download", "下载"),
     ("archive", "归档"),
     ("threads", "抓取指定微博"),
-    ("keepalive", "保活"),
+    ("keepalive", "检查登录"),
 ])
 def test_command_help_text(cmd, expected_text):
     """Each command has appropriate help description."""
@@ -137,13 +137,13 @@ class TestKeepalive:
                             lambda self: {"ok": 1})
         result = CliRunner().invoke(cli, ["keepalive"])
         assert result.exit_code == 0
-        assert "保活成功" in result.output
+        assert "OK" in result.output
 
     def test_not_logged_in_exit_2(self, monkeypatch):
         monkeypatch.setattr("weibo_cli.auth.get_credential", lambda: None)
         result = CliRunner().invoke(cli, ["keepalive"])
         assert result.exit_code == 2
-        assert "未登录" in result.output
+        assert "NOT_LOGGED_IN" in result.output
 
     def test_expired_session_exit_1(self, monkeypatch):
         from weibo_cli.auth import Credential
@@ -157,4 +157,4 @@ class TestKeepalive:
         monkeypatch.setattr("weibo_cli.client.WeiboClient.get_config", boom)
         result = CliRunner().invoke(cli, ["keepalive"])
         assert result.exit_code == 1
-        assert "重新登录" in result.output
+        assert "SESSION_EXPIRED" in result.output

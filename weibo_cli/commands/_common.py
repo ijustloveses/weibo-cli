@@ -16,6 +16,31 @@ from ..auth import Credential, get_credential
 from ..client import WeiboClient
 from ..exceptions import AuthRequiredError, WeiboApiError, SessionExpiredError, error_code_for_exception
 
+
+def _utf8_safe_streams() -> None:
+    """Make stdout/stderr tolerate non-UTF-8 terminals (e.g. GBK under Windows
+    Task Scheduler), so printing emoji never crashes with UnicodeEncodeError.
+
+    When weibo runs headless (scheduled tasks, redirected logs), the Windows
+    console defaults to GBK and rich's legacy writer dies on characters like
+    ✅/❌. Reconfiguring the streams to UTF-8 with errors="replace" turns a
+    hard crash into (at worst) a replacement glyph. No-op on platforms/streams
+    that already handle UTF-8.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            # Stream doesn't support reconfigure (already detached, a pipe on an
+            # old Python, etc.) — leave it as-is rather than break startup.
+            pass
+
+
+_utf8_safe_streams()
+
 console = Console()
 
 

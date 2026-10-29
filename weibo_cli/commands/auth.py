@@ -72,41 +72,50 @@ def logout():
 
 @click.command()
 def keepalive():
-    """保活：发一次已登录请求，刷新服务端会话并续期凭证
+    """检查登录是否仍然有效，并顺带续存本地凭证（含 cookie）。
 
     \b
-    微博的登录态真正由服务端 session 维持（约 7 天无活动即失效），而不是 cookie
-    的账面有效期。日常不常用时，把本命令挂到计划任务里每隔 2-3 天跑一次，即可让
-    会话保持活跃、减少重新扫码。
+    微博的登录态由服务端 session 维持（约 7 天即失效）。注意：实测表明，像本命令
+    这样的只读请求并不能真正重置服务端的过期时钟——即使每天跑、cookie 也续存了，
+    会话到期后仍会登出。所以本命令的可靠用途是「探活」：挂到计划任务里，一旦服务端
+    会话已过期就以非 0 退出码 + SESSION_EXPIRED 提示你去重新扫码登录。
 
     \b
-    成功退出码 0；未登录或会话已过期退出码非 0（便于计划任务判断是否需要重新登录）。
+    退出码：0 = 会话仍有效；1 = 会话已过期（需 weibo login --qrcode 重登）；
+    2 = 本地未登录。输出为纯 ASCII 单行（含时间戳），适合重定向到日志文件。
     """
     import sys
+    from datetime import datetime
 
     from ..auth import get_credential
     from ..client import WeiboClient
     from ..exceptions import WeiboApiError
 
+    # Keep output pure ASCII + plain click.echo (not rich): this command runs
+    # headless under Task Scheduler where the console is often GBK, and rich
+    # printing emoji there crashes with UnicodeEncodeError. A readable, greppable
+    # line also makes it easy to observe over several days whether the session
+    # actually survives.
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     cred = get_credential()
     if not cred:
-        console.print("[yellow]⚠️  未登录[/yellow]，使用 [bold]weibo login --qrcode[/bold] 扫码登录")
+        click.echo(f"[{ts}] keepalive: NOT_LOGGED_IN -- run: weibo login --qrcode")
         sys.exit(2)
 
     try:
         with WeiboClient(cred) as client:
-            # A cheap authenticated call: touches the server session (keeping it
-            # alive) and, on __exit__, re-persists the credential (keep-alive).
+            # A cheap authenticated call that confirms the server session is
+            # still alive and, on __exit__, re-persists the credential.
             client.get_config()
     except WeiboApiError as exc:
-        console.print(f"[red]❌ 保活失败，会话可能已过期：{exc}[/red]")
-        console.print("  请重新登录：[bold]weibo login --qrcode[/bold]")
+        click.echo(f"[{ts}] keepalive: SESSION_EXPIRED ({exc}) -- re-login: weibo login --qrcode")
         sys.exit(1)
     except Exception as exc:  # noqa: BLE001 - report any failure with nonzero exit
-        console.print(f"[red]❌ 保活请求出错：{exc}[/red]")
+        click.echo(f"[{ts}] keepalive: ERROR ({exc})")
         sys.exit(1)
 
-    console.print("[green]✅ 保活成功[/green]（会话已刷新，凭证已续期）")
+    click.echo(f"[{ts}] keepalive: OK (session valid, credential re-persisted)")
 
 
 @click.command()
